@@ -1,0 +1,19 @@
+{
+  "name": "oa-shell",
+  "productName": "亚华 OA",
+  "version": "0.1.0",
+  "private": true,
+  "description": "亚华 OA 桌面壳和本机加班提醒",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js"
+  },
+  "volta": {
+    "node": "22.22.2",
+    "npm": "10.9.4"
+  },
+  "devDependencies": {
+    "electron": "33.4.11"
+  }
+}

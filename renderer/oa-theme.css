@@ -1,0 +1,338 @@
+:root {
+  --oa-accent: #3555c5;
+  --oa-accent-hover: #2b46a7;
+  --oa-accent-soft: #eaf0fc;
+  --oa-accent-on-dark: #a9bfff;
+  --oa-selected: #e8eefb;
+  --oa-hover: #f2f5f9;
+  --oa-canvas: #f5f6f8;
+  --oa-line: #e3e7ec;
+  --oa-ink: #222c38;
+  --oa-muted: #586575;
+  --oa-surface-tint: #f7f9fb;
+  --oa-outgoing: #e2ebfc;
+  --oa-bubble-border: #e4e8ee;
+}
+
+/* Keep the OA DOM and controls intact; scope the desktop theme to navigation and IM. */
+.weapp-main-layout-v .e10header-container,
+.weapp-main-layout-v .e10header-user,
+.weapp-main-layout-v .e10header-menu,
+.weapp-main-layout-v .e10header-quick,
+.weapp-main-layout-v .e10header-account {
+  background-color: #252a31 !important;
+  background-image: none !important;
+}
+
+.weapp-main-layout-v .e10header-menu-item,
+.weapp-main-layout-v .e10header-menu-item-wrapper,
+.weapp-main-layout-v .e10header-quick-toolbar-item {
+  color: #c7ced8 !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+
+.weapp-main-layout-v .e10header-menu-item .ebcoms-assets-icon,
+.weapp-main-layout-v .e10header-menu-item .ui-icon,
+.weapp-main-layout-v .e10header-quick .ui-icon {
+  color: inherit !important;
+}
+
+.weapp-main-layout-v .e10header-menu-item-active,
+.weapp-main-layout-v .e10header-menu-item-active .e10header-menu-item-wrapper {
+  color: var(--oa-accent-on-dark) !important;
+  background-color: #333b46 !important;
+}
+
+.weapp-main-layout-v .e10header-menu-item:hover,
+.weapp-main-layout-v .e10header-quick-toolbar-item:hover {
+  color: #ffffff !important;
+  background-color: #373f4b !important;
+}
+
+.weapp-main-layout-v .e10header-menu-item::before,
+.weapp-main-layout-v .e10header-menu-item::after {
+  background-color: transparent !important;
+}
+
+.weapp-em-im-main-layout {
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--oa-ink);
+  --primary-color: var(--oa-accent);
+}
+
+.weapp-em-im-main-layout .session,
+.weapp-em-im-main-layout .session-title,
+.weapp-em-im-main-layout .session-tab,
+.weapp-em-im-main-layout .session-top {
+  background-color: var(--oa-surface-tint) !important;
+}
+
+.weapp-em-im-main-layout .session {
+  border-right: 1px solid var(--oa-line) !important;
+}
+
+.weapp-em-im-main-layout .search-bar {
+  display: flex;
+  align-items: center;
+  height: 44px;
+}
+
+.weapp-em-im-main-layout .search-bar-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 30px;
+  border: 1px solid #dfe4eb !important;
+  border-radius: 6px !important;
+  background: #ffffff !important;
+  line-height: normal;
+}
+
+.weapp-em-im-main-layout .search-bar-input:hover {
+  border-color: #bac4d2 !important;
+}
+
+.weapp-em-im-main-layout .search-bar-input:focus-within {
+  border-color: #758292 !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.weapp-em-im-main-layout .search-bar-input .search-bar-icon {
+  position: absolute !important;
+  top: 50% !important;
+  left: 9px !important;
+  transform: translateY(-50%) !important;
+  color: var(--oa-muted) !important;
+}
+
+.weapp-em-im-main-layout .search-bar-input .ui-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 28px;
+  padding: 0 26px 0 31px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--oa-ink) !important;
+  box-shadow: none !important;
+  outline: none !important;
+  font-size: 12px;
+  line-height: 28px !important;
+}
+
+.weapp-em-im-main-layout .search-bar-input .ui-input::placeholder {
+  color: var(--oa-muted) !important;
+}
+
+.weapp-em-im-main-layout .session-tab-item,
+.weapp-em-im-main-layout .session-top-list {
+  color: var(--oa-muted) !important;
+}
+
+.weapp-em-im-main-layout .session-tab-item.tab-active,
+.weapp-em-im-main-layout .session-top-list-active {
+  color: var(--oa-accent) !important;
+  background-color: var(--oa-accent-soft) !important;
+  border-radius: 5px;
+}
+
+.weapp-em-im-main-layout .session-tab-item.tab-active .ui-icon {
+  color: var(--oa-accent) !important;
+}
+
+.weapp-em-im-main-layout .session-tab-item.tab-active::after {
+  background-color: var(--oa-accent) !important;
+}
+
+.weapp-em-im-main-layout .session-item {
+  background-color: #ffffff !important;
+  border-bottom-color: transparent !important;
+}
+
+.weapp-em-im-main-layout .session-item:hover {
+  background-color: var(--oa-hover) !important;
+}
+
+.weapp-em-im-main-layout .session-item.is-active {
+  background-color: var(--oa-selected) !important;
+}
+
+.weapp-em-im-main-layout .session-item-content,
+.weapp-em-im-main-layout .session-item .right,
+.weapp-em-im-main-layout .session-item .bottom {
+  border-bottom-color: transparent !important;
+}
+
+.weapp-em-im-main-layout .session-item .name {
+  color: var(--oa-ink) !important;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.weapp-em-im-main-layout .session-item .last,
+.weapp-em-im-main-layout .session-item .date,
+.weapp-em-im-main-layout .session-item .workstatus {
+  color: var(--oa-muted) !important;
+}
+
+.weapp-em-im-main-layout .session-item .last {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.weapp-em-im-main-layout .session-item .date,
+.weapp-em-im-main-layout .session-item .workstatus {
+  font-size: 11px;
+}
+
+.weapp-em-im-main-layout .last-message-unread {
+  color: var(--oa-accent) !important;
+}
+
+.weapp-em-im-main-layout .message-main,
+.weapp-em-im-main-layout .message-wrapper,
+.weapp-em-im-main-layout .message-list-scrollbar-wrapper,
+.weapp-em-im-main-layout .title-bar {
+  background-color: var(--oa-canvas) !important;
+}
+
+.weapp-em-im-main-layout .title-bar {
+  border-bottom: 1px solid var(--oa-line) !important;
+}
+
+.weapp-em-im-main-layout .title-bar .name {
+  color: var(--oa-ink) !important;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.weapp-em-im-main-layout .oli-message .content.is-text {
+  background: #ffffff !important;
+  color: var(--oa-ink) !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+  border-color: var(--oa-bubble-border) !important;
+}
+
+.weapp-em-im-main-layout .oli-message.me .content.is-text {
+  background: var(--oa-outgoing) !important;
+  border-color: var(--oa-outgoing) !important;
+}
+
+.weapp-em-im-main-layout :is(.session-item, .oli-message) .oli-avatar .ui-avatar,
+.weapp-em-im-main-layout :is(.session-item, .oli-message) .oli-avatar .ui-avatar-bg,
+.weapp-em-im-main-layout :is(.session-item, .oli-message) .oli-avatar .ui-avatar-img {
+  border-radius: 8px !important;
+}
+
+.weapp-em-im-main-layout .oli-message .content.is-text::before,
+.weapp-em-im-main-layout .oli-message .content.is-text::after {
+  border-right-color: #ffffff !important;
+}
+
+.weapp-em-im-main-layout .oli-message.me .content.is-text::before,
+.weapp-em-im-main-layout .oli-message.me .content.is-text::after {
+  border-left-color: var(--oa-outgoing) !important;
+  border-right-color: transparent !important;
+}
+
+.weapp-em-im-main-layout .oli-message .mention-text {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.weapp-em-im-main-layout .oli-message-date,
+.weapp-em-im-main-layout .oli-message .meta,
+.weapp-em-im-main-layout .oli-message .readed {
+  color: var(--oa-muted) !important;
+}
+
+.weapp-em-im-main-layout .chat-input-main,
+.weapp-em-im-main-layout .chat-input,
+.weapp-em-im-main-layout .chat-input-container,
+.weapp-em-im-main-layout .send-button-wrapper {
+  background-color: #ffffff !important;
+}
+
+.weapp-em-im-main-layout .chat-input {
+  border: 0 !important;
+  border-top: 1px solid var(--oa-line) !important;
+  border-radius: 0 !important;
+}
+
+.weapp-em-im-main-layout .chat-input:focus-within {
+  border-top-color: var(--oa-line) !important;
+  box-shadow: none !important;
+}
+
+.weapp-em-im-main-layout .message-operation .weapp-em-icon,
+.weapp-em-im-main-layout .ql-toolbar .weapp-em-icon {
+  color: var(--oa-muted) !important;
+}
+
+.weapp-em-im-main-layout .message-operation .operation-item {
+  border-radius: 6px;
+}
+
+.weapp-em-im-main-layout .message-operation .operation-item:hover,
+.weapp-em-im-main-layout .ql-toolbar .ql-item:hover {
+  background-color: var(--oa-hover) !important;
+}
+
+.weapp-em-im-main-layout .message-operation .operation-item:hover .weapp-em-icon,
+.weapp-em-im-main-layout .ql-toolbar .ql-item:hover .weapp-em-icon {
+  color: var(--oa-ink) !important;
+}
+
+.weapp-em-im-main-layout .send-button-wrapper .ui-btn-primary,
+.weapp-em-im-main-layout .send-button-wrapper .send-btn,
+.weapp-em-im-main-layout .send-button-wrapper .send-button {
+  background-color: var(--oa-accent) !important;
+  border-color: var(--oa-accent) !important;
+  color: #ffffff !important;
+  border-radius: 5px !important;
+  box-shadow: none !important;
+}
+
+.weapp-em-im-main-layout .send-button-wrapper .ui-btn-primary:hover {
+  background-color: var(--oa-accent-hover) !important;
+}
+
+.weapp-em-im-main-layout .send-button-content .send-btn {
+  border-radius: 6px 0 0 6px !important;
+  font-family: inherit;
+  font-weight: 500;
+}
+
+.weapp-em-im-main-layout .send-button-content .send-btn-icon {
+  border-left-color: rgba(255, 255, 255, 0.25) !important;
+  border-radius: 0 6px 6px 0 !important;
+}
+
+.weapp-em-im-main-layout .send-button-wrapper .ui-btn-primary:active {
+  background-color: #223a91 !important;
+}
+
+.weapp-em-im-main-layout :is(button, a, input):focus-visible,
+.weapp-main-layout-v .e10header a:focus-visible {
+  outline: 2px solid var(--oa-accent);
+  outline-offset: 2px;
+}
+
+.weapp-em-im-main-layout .session-item,
+.weapp-em-im-main-layout .message-operation .operation-item,
+.weapp-em-im-main-layout .ql-toolbar .ql-item {
+  transition: background-color 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .weapp-em-im-main-layout .session-item,
+  .weapp-em-im-main-layout .message-operation .operation-item,
+  .weapp-em-im-main-layout .ql-toolbar .ql-item {
+    transition: none;
+  }
+}
