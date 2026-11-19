@@ -168,7 +168,7 @@ installOvertimeFlowMonitor(window, (payload) => {
   ipcRenderer.send("oa:overtime-flows", payload);
 });
 
-window.__extractOaDomMessage = () => extractDomSessionMessage(document);
+window.__extractOaDomMessage = (candidate) => extractDomSessionMessage(document, candidate);
 
 installDomMessageObserver(document, (msg) => {
   if (typeof window.__noteOaMessageSent === "function") {
@@ -192,7 +192,7 @@ function focusSessionBySender(sender) {
     const nameEl = item.querySelector(".name .span-text") || item.querySelector(".name");
     const text = nameEl ? String(nameEl.textContent || "").replace(/\s+/g, " ").trim() : "";
     if (text === name) {
-      if (!item.classList.contains("is-active")) {
+      if (!item.classList.contains("is-active") && !item.classList.contains("active")) {
         item.click();
       }
       return true;
@@ -202,9 +202,9 @@ function focusSessionBySender(sender) {
 }
 
 ipcRenderer.on("oa:popup-click", (_event, payload) => {
-  const clicked = typeof window.__triggerOaNoticeClick === "function" && window.__triggerOaNoticeClick(payload);
-  const sender = payload && typeof payload.sender === "string" ? payload.sender : "";
-  if (!focusSessionBySender(sender) && !clicked) {
+  const conversation = payload?.conversation || payload?.sender;
+  if (focusSessionBySender(conversation)) return;
+  if (typeof window.__triggerOaNoticeClick !== "function" || !window.__triggerOaNoticeClick(payload)) {
     const msgLink = document.querySelector('a[title="工作消息"]');
     if (msgLink) {
       msgLink.click();

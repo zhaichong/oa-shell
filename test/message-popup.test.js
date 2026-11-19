@@ -299,6 +299,51 @@ test("normalizeMessagePayload handles Notification, nested payloads, colon split
   assert.equal(longResult.content.length, 160);
 });
 
+test("normalizes serialized OA emoji before truncating the preview", () => {
+  const emoji = '<img class="oli-emoji-item-img" style="width:16px; height:16px;" alt="[含泪的笑脸]" src="https://example.test/emoji.png">';
+  assert.deepEqual(normalizeMessagePayload("张艺晗", { body: emoji }), {
+    sender: "张艺晗",
+    content: "🥲"
+  });
+  assert.deepEqual(normalizeMessagePayload({
+    groupName: "项目群",
+    content: "张艺晗：收到 " + emoji + " " + "<img alt='[自定义表情]' class='oli-emoji-item-img' src='emoji.png'>"
+  }), {
+    conversation: "项目群",
+    sender: "张艺晗",
+    content: "收到 🥲 [自定义表情]"
+  });
+  assert.equal(normalizeMessagePayload({ sender: "张艺晗", content: '<img src="file.png">' }).content, "[图片]");
+});
+
+test("group notifications keep their conversation when enriched or deduplicated", () => {
+  const group = { conversation: "事项的新反馈", sender: "谭启春", content: "流程有新反馈" };
+  assert.deepEqual(normalizeMessagePayload({ groupName: group.conversation, body: "谭启春：流程有新反馈" }), group);
+  const layout = makeElement("div", { classes: ["weapp-em-im-main-layout"] });
+  const sessions = makeElement("div", { classes: ["session"] });
+  sessions.appendChild(makeSessionItem({ id: "group", name: group.conversation, last: "谭启春：流程有新反馈", unreadBadge: "1" }));
+  layout.appendChild(sessions);
+  const doc = makeDoc([layout]);
+  const direct = { sender: group.sender, content: group.content };
+  assert.deepEqual(extractDomSessionMessage(doc, direct), { ...group, unread: true });
+  assert.equal(extractDomSessionMessage(doc, { ...direct, content: "另一条消息" }), null);
+  assert.deepEqual(extractDomSessionMessage(doc), { ...group, unread: true });
+  sessions.appendChild(makeSessionItem({ id: "other", name: "另一个群", last: "谭启春：流程有新反馈", unreadBadge: "1" }));
+  assert.equal(extractDomSessionMessage(doc, direct), null);
+
+  const timers = createFakeTimers();
+  const controller = createPopupController({
+    showPopup() {},
+    hidePopup() {},
+    schedule: timers.schedule,
+    cancel: timers.cancel
+  });
+  assert.equal(controller.show(group), true);
+  assert.equal(controller.show(direct), false);
+  assert.deepEqual(controller.current(), group);
+  assert.equal(controller.show({ ...group, conversation: "另一个群" }), true);
+});
+
 test("extractDomSessionMessage prefers unread sessions, skips assistant pin, and handles active incoming messages", () => {
   const layout = makeElement("div", { classes: ["weapp-em-im-main-layout"] });
   const sessionList = makeElement("div", { classes: ["session"] });

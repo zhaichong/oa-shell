@@ -193,6 +193,21 @@ test("Web Notification and ClientNotification forward sender and content via oa:
   assert.equal(clientClicks, 1);
 });
 
+test("notification bridge forwards the group title alongside the member and preview", () => {
+  const { window, sent } = loadBridgeEnv();
+  const notice = new window.Notification("工作消息", {
+    body: "谭启春：请看工作流",
+    data: { groupName: "事项的新反馈" }
+  });
+  let clicks = 0;
+  notice.onclick = () => { clicks += 1; };
+  const payload = { sender: "谭启春", content: "请看工作流", conversation: "事项的新反馈" };
+  assert.deepEqual(sent.find((event) => event.channel === "oa:message").payload, payload);
+  assert.equal(window.__triggerOaNoticeClick({ ...payload, conversation: "其他会话" }), false);
+  assert.equal(window.__triggerOaNoticeClick(payload), true);
+  assert.equal(clicks, 1);
+});
+
 test("open-message-popup-window and tray-flash forward immediate payloads or fall back to DOM after delay", () => {
   const { window, sent, timers } = loadBridgeEnv({
     domMessage: { sender: "王五", content: "刚发了一张图片" }

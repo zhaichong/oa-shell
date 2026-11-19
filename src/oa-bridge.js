@@ -78,9 +78,9 @@ function signalAttention() {
   }
 }
 
-function extractDomMessage() {
+function extractDomMessage(candidate) {
   try {
-    return typeof window.__extractOaDomMessage === "function" ? window.__extractOaDomMessage() : null;
+    return typeof window.__extractOaDomMessage === "function" ? window.__extractOaDomMessage(candidate) : null;
   } catch (error) {
     return null;
   }
@@ -102,7 +102,8 @@ function sendMessagePopup(payload) {
   try {
     ipcRenderer.send("oa:message", {
       sender: String(payload.sender || DEFAULT_SENDER),
-      content: String(payload.content || DEFAULT_CONTENT)
+      content: String(payload.content || DEFAULT_CONTENT),
+      ...(payload.conversation ? { conversation: payload.conversation } : {})
     });
   } catch (error) {
     noop(error);
@@ -111,6 +112,8 @@ function sendMessagePopup(payload) {
 
 function resolveNotificationPayload(input, extra) {
   const normalized = normalizePayload(input, extra);
+  const matched = normalized && !normalized.conversation && normalized.content ? extractDomMessage(normalized) : null;
+  if (matched?.conversation) return matched;
   const dom = (!normalized || !normalized.sender || isGenericSender(normalized.sender) || !normalized.content)
     ? extractDomMessage()
     : null;
@@ -126,14 +129,16 @@ function resolveNotificationPayload(input, extra) {
   }
   return {
     sender: sender || DEFAULT_SENDER,
-    content: content || DEFAULT_CONTENT
+    content: content || DEFAULT_CONTENT,
+    ...((normalized?.conversation || (!normalized?.content && dom?.conversation))
+      ? { conversation: normalized?.conversation || dom?.conversation } : {})
   };
 }
 
 function scheduleFlashMessage(payload) {
   const normalized = normalizePayload(payload);
   if (normalized && normalized.sender && normalized.content && !isGenericSender(normalized.sender)) {
-    sendMessagePopup(normalized);
+    sendMessagePopup(resolveNotificationPayload(payload));
     return;
   }
   const scheduledAt = Date.now();
@@ -145,10 +150,11 @@ function scheduleFlashMessage(payload) {
     if (lastExplicitMessageAt >= scheduledAt) {
       return;
     }
-    const dom = extractDomMessage();
+    const snapshot = extractDomMessage();
+    const dom = snapshot?.unread === false ? null : snapshot;
     const sender = (dom && dom.sender) || (normalized && normalized.sender) || DEFAULT_SENDER;
     const content = (dom && dom.content) || (normalized && normalized.content) || FLASH_FALLBACK_CONTENT;
-    sendMessagePopup({ sender, content });
+    sendMessagePopup({ sender, content, conversation: dom?.conversation || normalized?.conversation });
   };
   if (typeof setTimeout === "function") {
     if (fallbackTimer !== null && typeof clearTimeout === "function") {
@@ -164,6 +170,7 @@ function rememberNotice(resolved, hasListeners, triggerClick) {
   latestNotice = {
     sender: resolved.sender,
     content: resolved.content,
+    conversation: resolved.conversation,
     hasListeners: hasListeners,
     triggerClick: triggerClick
   };
@@ -348,6 +355,9 @@ function installClientBridge() {
       return false;
     }
     const targetSender = payload && typeof payload.sender === "string" ? payload.sender : "";
+    if ((payload?.conversation || latestNotice.conversation) && payload?.conversation !== latestNotice.conversation) {
+      return false;
+    }
     if (targetSender && latestNotice.sender && !isGenericSender(targetSender) && !isGenericSender(latestNotice.sender) && targetSender !== latestNotice.sender) {
       return false;
     }

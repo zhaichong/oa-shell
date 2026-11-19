@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { app, clipboard, ipcMain, session, webContents } = require("electron");
+const { app, BaseWindow, BrowserWindow, clipboard, ipcMain, session, webContents } = require("electron");
 
 // Exercise the production main entry with a disposable OA session and a local fixture.
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "oa-startup-test-"));
@@ -61,6 +61,47 @@ async function verify() {
   await oa.executeJavaScript('window.emRequire("electron").ipcRenderer.send("init-photo-view"); true');
   await pause(100);
   assert.equal(photoView(), undefined, "the OA init signal must not preload the photo viewer");
+  const host = BaseWindow.getAllWindows().find(window => window.contentView.children.some(view => view.webContents === oa));
+  assert.ok(host);
+  const desktopPopup = () => BrowserWindow.getAllWindows().find(window => (
+    window.webContents.getURL().startsWith("data:text/html") && window.getBounds().width === 336
+  ));
+  const emojiHtml = '<img class="oli-emoji-item-img" alt="[含泪的笑脸]" style="width:16px; height:16px;">';
+  const groupNotice = { sender: "项目成员", content: "收到了 " + emojiHtml, conversation: "事项的新反馈" };
+  host.show();
+  host.focus();
+  await waitFor(() => host.isFocused());
+  ipcMain.emit("oa:message", { sender: oa }, groupNotice);
+  await pause(200);
+  assert.equal(desktopPopup(), undefined, "opening unread messages in foreground must not produce a second desktop popup");
+  host.hide();
+  await oa.executeJavaScript(`new Notification("工作消息", {
+    body: ${JSON.stringify(groupNotice.sender + "：" + groupNotice.content)},
+    data: { groupName: ${JSON.stringify(groupNotice.conversation)} }
+  }); true`);
+  const toast = await waitFor(() => desktopPopup()?.isVisible() && desktopPopup());
+  const displayed = await toast.webContents.executeJavaScript(
+    '["#popupSender", "#popupContent"].map(selector => document.querySelector(selector).textContent)'
+  );
+  assert.deepEqual(displayed, [groupNotice.conversation, groupNotice.sender + "：收到了 🥲"]);
+  if (process.env.OA_TEST_POPUP_PREVIEW) {
+    await toast.webContents.executeJavaScript("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    fs.writeFileSync(process.env.OA_TEST_POPUP_PREVIEW, (await toast.webContents.capturePage()).toPNG());
+  }
+  await oa.executeJavaScript(`(() => {
+    const row = document.createElement("div");
+    row.className = "session-item";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = ${JSON.stringify(groupNotice.conversation)};
+    row.append(name);
+    row.addEventListener("click", () => { document.body.dataset.chatOpened = name.textContent; });
+    document.querySelector(".session").append(row);
+  })()`);
+  await toast.webContents.executeJavaScript('document.querySelector("#popupCard").click()');
+  await waitFor(() => oa.executeJavaScript("document.body.dataset.chatOpened"));
+  assert.equal(toast.isVisible(), false);
+  console.log("Foreground suppressed; background group title, emoji and click-to-conversation verified");
   // Opt in only with a disposable system clipboard.
   if (process.env.OA_TEST_CLIPBOARD === "1") {
     const link = "https://example.test/knowledge/full-link?doc=123456789&lang=zh#details";

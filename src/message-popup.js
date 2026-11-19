@@ -31,6 +31,7 @@ const CONTENT_KEYS = [
 ];
 
 const NESTED_KEYS = ["data", "message", "msg", "session", "notice", "notification"];
+const CONVERSATION_KEYS = ["conversation", "groupName", "groupTitle", "conversationName", "conversationTitle", "sessionName", "chatName"];
 
 const GENERIC_SENDERS = new Set([
   "新消息",
@@ -53,6 +54,36 @@ function collapseWhitespace(value) {
 
 function stripUnreadPrefix(value) {
   return collapseWhitespace(value).replace(/^(?:\s*\[\d+\+?条(?:未读)?\]\s*)+/, "").trim();
+}
+
+function emojiPreview(alt) {
+  const label = collapseWhitespace(alt).replace(/^\[(.*)\]$/, "$1").trim();
+  if (label === "含泪的笑脸") return "🥲";
+  if (/\p{Extended_Pictographic}/u.test(label)) return label;
+  return label ? "[" + label + "]" : "[表情]";
+}
+
+function normalizePreview(value) {
+  if (typeof value !== "string") return "";
+  return stripUnreadPrefix(value.replace(/<img\b(?:"[^"]*"|'[^']*'|[^"'<>])*>/gi, (tag) => {
+    const attributes = Object.create(null);
+    for (const match of tag.matchAll(/\s+([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+))/g)) {
+      attributes[match[1].toLowerCase()] = match[2] ?? match[3] ?? match[4];
+    }
+    return attributes.class?.split(/\s+/).includes("oli-emoji-item-img")
+      ? emojiPreview(attributes.alt)
+      : "[图片]";
+  }));
+}
+
+function readPreviewText(node) {
+  if (!node?.querySelector?.("img.oli-emoji-item-img")) return node?.textContent || "";
+  function collect(child) {
+    if (child.nodeType === 3) return child.textContent || "";
+    if (child.matches?.("img.oli-emoji-item-img")) return emojiPreview(child.getAttribute("alt"));
+    return Array.from(child.childNodes || [], collect).join("");
+  }
+  return collect(node);
 }
 
 function isGenericSender(sender) {
@@ -129,7 +160,7 @@ function pickContent(objects) {
   for (let keyIndex = 0; keyIndex < CONTENT_KEYS.length; keyIndex += 1) {
     const key = CONTENT_KEYS[keyIndex];
     for (let objIndex = 0; objIndex < objects.length; objIndex += 1) {
-      const value = stripUnreadPrefix(objects[objIndex][key]);
+      const value = normalizePreview(objects[objIndex][key]);
       if (value) {
         return value;
       }
@@ -143,11 +174,12 @@ function pickContent(objects) {
  * or OA IPC payloads into `{ sender, content }`, or `null` when empty.
  * @param {unknown} input
  * @param {unknown} [extra]
- * @returns {{ sender: string, content: string } | null}
+ * @returns {{ sender: string, content: string, conversation?: string } | null}
  */
 function normalizeMessagePayload(input, extra) {
   let sender = "";
   let content = "";
+  let objects = [];
 
   if (typeof input === "string") {
     const trimmed = collapseWhitespace(input);
@@ -155,7 +187,7 @@ function normalizeMessagePayload(input, extra) {
       sender = trimmed;
       content = stripUnreadPrefix(extra);
     } else if (extra && typeof extra === "object") {
-      const objects = collectCandidateObjects(extra);
+      objects = collectCandidateObjects(extra);
       const extractedSender = pickSender(objects);
       if (extractedSender && (!isGenericSender(extractedSender) || !trimmed)) {
         sender = extractedSender;
@@ -164,18 +196,19 @@ function normalizeMessagePayload(input, extra) {
       }
       content = pickContent(objects);
     } else if (trimmed) {
-      const split = splitSenderContent(trimmed);
+      const preview = normalizePreview(trimmed);
+      const split = splitSenderContent(preview);
       if (split) {
         sender = split.sender;
         content = split.content;
       } else if (isGenericSender(trimmed)) {
         sender = trimmed;
       } else {
-        content = stripUnreadPrefix(trimmed);
+        content = preview;
       }
     }
   } else if (input && typeof input === "object") {
-    const objects = collectCandidateObjects(input).concat(collectCandidateObjects(extra));
+    objects = collectCandidateObjects(input).concat(collectCandidateObjects(extra));
     sender = pickSender(objects);
     content = pickContent(objects);
     if (!content && typeof extra === "string") {
@@ -184,7 +217,14 @@ function normalizeMessagePayload(input, extra) {
   }
 
   sender = collapseWhitespace(sender);
-  content = stripUnreadPrefix(content);
+  content = normalizePreview(content);
+  const conversation = CONVERSATION_KEYS.flatMap((key) => objects.map((item) => collapseWhitespace(item[key])))
+    .find((name) => name && !isGenericSender(name)) || "";
+  const speaker = splitSenderContent(content);
+  if (speaker && (sender === conversation || sender === speaker.sender)) {
+    sender = speaker.sender;
+    content = speaker.content;
+  }
 
   if (!content && sender) {
     const splitFromSender = splitSenderContent(sender);
@@ -208,7 +248,8 @@ function normalizeMessagePayload(input, extra) {
 
   return {
     sender: sender.slice(0, MAX_SENDER_LENGTH),
-    content: content.slice(0, MAX_CONTENT_LENGTH)
+    content: content.slice(0, MAX_CONTENT_LENGTH),
+    ...(conversation && conversation !== sender ? { conversation: conversation.slice(0, MAX_SENDER_LENGTH) } : {})
   };
 }
 
@@ -285,7 +326,7 @@ function extractLastText(lastEl) {
   if (!lastEl) {
     return "";
   }
-  return stripUnreadPrefix(lastEl.textContent || "");
+  return normalizePreview(readPreviewText(lastEl));
 }
 
 function isSessionUnread(item, lastEl) {
@@ -358,7 +399,7 @@ function readOliMessageContent(msgEl) {
     ? (msgEl.querySelector(".content.is-text") || msgEl.querySelector(".mention-text") || msgEl.querySelector(".content"))
     : null;
   if (textNode) {
-    const text = stripUnreadPrefix(textNode.textContent || "");
+    const text = normalizePreview(readPreviewText(textNode));
     if (text) {
       return text;
     }
@@ -369,7 +410,7 @@ function readOliMessageContent(msgEl) {
   if (msgEl.querySelector && msgEl.querySelector(".file-content")) {
     return "[文件]";
   }
-  return stripUnreadPrefix(msgEl.textContent || "");
+  return normalizePreview(readPreviewText(msgEl));
 }
 
 function resolveActiveChatName(root, sessions) {
@@ -414,16 +455,33 @@ function readActiveIncomingMessage(root, sessions) {
  * Prefers the first unread `.session-item`; falls back to the latest non-outgoing
  * `.oli-message` in the active chat.
  * @param {Document} doc
- * @returns {{ sender: string, content: string, unread: boolean } | null}
+ * @param {{ sender: string, content: string }} [candidate]
+ * @returns {{ sender: string, content: string, unread: boolean, conversation?: string } | null}
  */
-function extractDomSessionMessage(doc) {
+function extractDomSessionMessage(doc, candidate) {
   const root = findImRoot(doc);
   if (!root) {
     return null;
   }
   const sessions = readSessionItems(root);
-  const unreadItem = sessions.find((item) => item.unread && item.sender && item.content);
+  const unreadItems = sessions.filter((item) => item.unread && item.sender && item.content);
+  if (candidate && candidate.content) {
+    const matches = unreadItems.flatMap((item) => {
+      const speaker = splitSenderContent(item.content);
+      if (speaker && ((speaker.content === candidate.content && (speaker.sender === candidate.sender || item.sender === candidate.sender)) ||
+        (item.sender === candidate.sender && item.content === candidate.content))) {
+        return [{ ...speaker, conversation: item.sender, unread: true }];
+      }
+      return [];
+    });
+    return matches.length === 1 ? matches[0] : null;
+  }
+  const unreadItem = unreadItems[0];
   if (unreadItem) {
+    const speaker = splitSenderContent(unreadItem.content);
+    if (speaker && speaker.sender !== unreadItem.sender) {
+      return { ...speaker, conversation: unreadItem.sender, unread: true };
+    }
     return {
       sender: unreadItem.sender,
       content: unreadItem.content,
@@ -445,7 +503,7 @@ function extractDomSessionMessage(doc) {
  * Observe OA IM DOM mutations for newly arrived incoming messages while ignoring
  * the initial session snapshot and messages sent by the current user.
  * @param {Document} doc
- * @param {(message: { sender: string, content: string }) => void} onMessage
+ * @param {(message: { sender: string, content: string, conversation?: string }) => void} onMessage
  * @param {{ debounceMs?: number, now?: () => number, schedule?: typeof setTimeout, cancel?: typeof clearTimeout, MutationObserverImpl?: typeof MutationObserver }} [options]
  * @returns {{ check: () => void, disconnect: () => void }}
  */
@@ -489,13 +547,13 @@ function installDomMessageObserver(doc, onMessage, options = {}) {
     if (lastUserSent.text && timestamp - lastUserSent.at < 1500 && message.content === lastUserSent.text) {
       return;
     }
-    const key = message.sender + "\n" + message.content;
+    const key = (message.conversation || "") + "\n" + message.sender + "\n" + message.content;
     if (key === lastEmittedKey && timestamp - lastEmittedAt < 400) {
       return;
     }
     lastEmittedKey = key;
     lastEmittedAt = timestamp;
-    onMessage({ sender: message.sender, content: message.content });
+    onMessage(message);
   }
 
   function readComposerText() {
@@ -592,7 +650,10 @@ function installDomMessageObserver(doc, onMessage, options = {}) {
               prev && prev.unread && item.index === 0 && prevTopKey !== item.key && item.index < prev.index
             );
             if (isNewUnread || changedUnread || movedToTop) {
-              emit({ sender: item.sender, content: item.content });
+              const speaker = splitSenderContent(item.content);
+              emit(speaker && speaker.sender !== item.sender
+                ? { ...speaker, conversation: item.sender }
+                : { sender: item.sender, content: item.content });
             }
           }
           prevSessions.set(item.key, { content: item.content, unread: item.unread, index: item.index });
@@ -756,7 +817,7 @@ function isFallbackMessage(message) {
 /**
  * Manage popup visibility, short-term deduplication, fallback replacement,
  * and automatic dismissal after `durationMs`.
- * @param {{ showPopup: (payload: { sender: string, content: string }) => void, hidePopup: () => void, durationMs?: number, dedupeMs?: number, schedule?: typeof setTimeout, cancel?: typeof clearTimeout, now?: () => number }} options
+ * @param {{ showPopup: (payload: { sender: string, content: string, conversation?: string }) => void, hidePopup: () => void, durationMs?: number, dedupeMs?: number, schedule?: typeof setTimeout, cancel?: typeof clearTimeout, now?: () => number }} options
  */
 function createPopupController({
   showPopup,
@@ -798,12 +859,17 @@ function createPopupController({
     }
     const next = {
       sender: normalized.sender || "工作消息",
-      content: normalized.content || "收到一条新消息"
+      content: normalized.content || "收到一条新消息",
+      ...(normalized.conversation ? { conversation: normalized.conversation } : {})
     };
     const timestamp = now();
-    const key = next.sender + "\n" + next.content;
+    const key = (next.conversation || "") + "\n" + next.sender + "\n" + next.content;
 
     if (key === lastKey && timestamp - lastShownAt < dedupeMs) {
+      return false;
+    }
+    if (open && active?.conversation && !next.conversation && active.sender === next.sender &&
+      active.content === next.content && timestamp - lastShownAt < dedupeMs) {
       return false;
     }
     if (open && active && !isFallbackMessage(active) && isFallbackMessage(next) && timestamp - lastShownAt < dedupeMs) {
@@ -851,7 +917,7 @@ function buildPopupHtml() {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #ffffff;
+    background: transparent;
     color: #222c38;
     font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
     user-select: none;
@@ -861,13 +927,15 @@ function buildPopupHtml() {
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
     width: 100%;
     height: 100%;
     padding: 10px 14px 12px;
     border: 1px solid #d9e0ea;
-    border-top: 3px solid #3555c5;
+    border-radius: 10px;
     background: #ffffff;
+    color: inherit;
+    font-family: inherit;
+    text-align: start;
     cursor: pointer;
     outline: none;
     transition: background-color 150ms ease-out;
@@ -887,6 +955,7 @@ function buildPopupHtml() {
     align-items: center;
     justify-content: space-between;
     min-width: 0;
+    height: 24px;
   }
 
   .popup-brand {
@@ -907,16 +976,18 @@ function buildPopupHtml() {
   }
 
   .popup-close {
+    position: absolute;
+    top: 8px;
+    right: 9px;
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 22px;
-    height: 22px;
-    margin-left: 8px;
+    width: 28px;
+    height: 28px;
     padding: 0;
     border: 0;
-    border-radius: 4px;
+    border-radius: 7px;
     background: transparent;
     color: #586575;
     font-family: inherit;
@@ -940,13 +1011,13 @@ function buildPopupHtml() {
     display: flex;
     flex-direction: column;
     min-width: 0;
-    margin-top: 6px;
+    margin-top: 5px;
   }
 
   .popup-sender {
     overflow: hidden;
     color: #222c38;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     line-height: 20px;
     text-overflow: ellipsis;
@@ -956,11 +1027,12 @@ function buildPopupHtml() {
   .popup-content {
     display: -webkit-box;
     overflow: hidden;
-    margin-top: 4px;
-    color: #586575;
+    margin-top: 3px;
+    color: #485668;
+    font-family: "Segoe UI", "Microsoft YaHei", "Segoe UI Emoji", sans-serif;
     font-size: 13px;
     line-height: 18px;
-    word-break: break-word;
+    overflow-wrap: anywhere;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
   }
@@ -974,9 +1046,9 @@ function buildPopupHtml() {
 </style>
 </head>
 <body>
-  <div id="popupCard" class="popup-card" role="button" tabindex="0" aria-label="查看新消息">
-    <div class="popup-head">
-      <div class="popup-brand">
+  <button id="popupCard" class="popup-card" type="button" aria-label="查看新消息">
+    <span class="popup-head">
+      <span class="popup-brand">
         <svg class="popup-icon" viewBox="0 0 64 64" aria-hidden="true">
           <defs>
             <linearGradient id="popupIconBg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
@@ -991,14 +1063,14 @@ function buildPopupHtml() {
           <circle cx="47.5" cy="46.5" r="4" fill="#63e6be"></circle>
         </svg>
         <span>OA · 新消息</span>
-      </div>
-      <button id="popupClose" class="popup-close" type="button" aria-label="关闭消息提醒" title="关闭">×</button>
-    </div>
-    <div class="popup-body">
-      <div id="popupSender" class="popup-sender">工作消息</div>
-      <div id="popupContent" class="popup-content">收到一条新消息</div>
-    </div>
-  </div>
+      </span>
+    </span>
+    <span class="popup-body">
+      <span id="popupSender" class="popup-sender">工作消息</span>
+      <span id="popupContent" class="popup-content">收到一条新消息</span>
+    </span>
+  </button>
+  <button id="popupClose" class="popup-close" type="button" aria-label="关闭消息提醒" title="关闭">×</button>
   <script>
     (function () {
       var card = document.getElementById("popupCard");
@@ -1010,29 +1082,26 @@ function buildPopupHtml() {
         var data = payload && typeof payload === "object" ? payload : {};
         var sender = typeof data.sender === "string" && data.sender ? data.sender : "工作消息";
         var content = typeof data.content === "string" && data.content ? data.content : "收到一条新消息";
-        senderEl.textContent = sender;
-        contentEl.textContent = content;
-        card.setAttribute("aria-label", sender + "：" + content);
+        var conversation = typeof data.conversation === "string" ? data.conversation : "";
+        var title = (conversation || sender).replace(/\\s*对方正在输入中(?:…|\\.{3})?\\s*$/, "").trim() || "工作消息";
+        var preview = conversation && sender !== conversation ? sender + "：" + content : content;
+        senderEl.textContent = title;
+        contentEl.textContent = preview;
+        card.setAttribute("aria-label", "查看新消息，" + title + "：" + preview);
       };
 
       function openMessage() {
         window.location.href = "https://oa-popup.local/open";
       }
 
-      function closePopup(event) {
-        if (event) {
-          event.stopPropagation();
-        }
+      function closePopup() {
         window.location.href = "https://oa-popup.local/close";
       }
 
       closeBtn.addEventListener("click", closePopup);
       card.addEventListener("click", openMessage);
-      card.addEventListener("keydown", function (event) {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          openMessage();
-        } else if (event.key === "Escape") {
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
           event.preventDefault();
           closePopup();
         }

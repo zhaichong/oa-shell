@@ -194,7 +194,8 @@ const POPUP_OPEN_URL = "https://oa-popup.local/open"
 const POPUP_CLOSE_URL = "https://oa-popup.local/close"
 let messagePopupWindow: BrowserWindow | null = null
 let popupReady = false
-let pendingPopupPayload: { sender: string; content: string } | null = null
+type PopupMessage = { sender: string; content: string; conversation?: string }
+let pendingPopupPayload: PopupMessage | null = null
 
 let photoViewWindow: BrowserWindow | null = null
 let photoIdleTimer: ReturnType<typeof setTimeout> | null = null
@@ -360,7 +361,7 @@ function ensurePopupWindow(): BrowserWindow {
     alwaysOnTop: true,
     focusable: false,
     show: false,
-    backgroundColor: "#ffffff",
+    transparent: true,
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
@@ -407,7 +408,7 @@ function ensurePopupWindow(): BrowserWindow {
   return win
 }
 
-function renderAndShowPopup(payload: { sender: string; content: string }): void {
+function renderAndShowPopup(payload: PopupMessage): void {
   const win = ensurePopupWindow()
   pendingPopupPayload = payload
   if (!popupReady) {
@@ -1213,6 +1214,7 @@ function createWindow(): void {
   })
   mainWindow.on("move", saveBounds)
   mainWindow.on("focus", () => {
+    popupController.dismiss()
     attention.refreshForeground().then((foreground) => {
       if (!foreground) {
         syncPageFocus(false)
@@ -1432,7 +1434,7 @@ function registerIpc(): void {
     }
   })
   ipcMain.on("oa:message", (event, raw: unknown) => {
-    if (!oaView || event.sender !== oaView.webContents) {
+    if (!oaView || event.sender !== oaView.webContents || mainWindow?.isFocused()) {
       return
     }
     const normalized = normalizeMessagePayload(raw)
