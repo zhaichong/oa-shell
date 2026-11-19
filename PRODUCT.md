@@ -1,4 +1,4 @@
-# 亚华 OA
+# OA
 
 ## Register
 
