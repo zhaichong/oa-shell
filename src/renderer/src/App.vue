@@ -28,7 +28,7 @@ type Turn = {
 
 const avatarPresets = [
   { id: "preset:default", label: "经典分身" },
-  { id: "preset:orbit", label: "亚华星轨" },
+  { id: "preset:orbit", label: "星轨" },
   { id: "preset:bot", label: "蓝釉机甲" },
   { id: "preset:owl", label: "夜航猫头鹰" },
   { id: "preset:cat", label: "办公小猫" }

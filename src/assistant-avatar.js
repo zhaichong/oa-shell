@@ -9,7 +9,7 @@ const AVATAR_PRESETS = [
   },
   {
     id: "preset:orbit",
-    label: "亚华星轨",
+    label: "星轨",
     svg: '<svg viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="8" fill="#2b46a7"></rect><path d="M29 9.7c1.1 0 1.9 1.2 1.4 2.2l-6.9 11.7a2.2 2.2 0 0 1-1.9 1.1h-3.4l6.5-11 2.3-4H29z" fill="#b8ceff"></path><path d="M10.9 9.7h4.2c.8 0 1.6.4 1.9 1.1l4.8 8.4V30c0 1.2-1 2.2-2.2 2.2h-1.5a2.2 2.2 0 0 1-2.2-2.2v-8.4L9.5 11.9c-.6-1 .2-2.2 1.4-2.2z" fill="#ffffff"></path><circle cx="29.6" cy="29.1" r="2.6" fill="#63e6be"></circle></svg>'
   },
   {

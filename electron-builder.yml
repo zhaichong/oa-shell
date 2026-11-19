@@ -1,5 +1,5 @@
-appId: com.yarward.oa-shell
-productName: 亚华 OA
+appId: app.oa-shell
+productName: OA
 directories:
   buildResources: assets
   output: dist

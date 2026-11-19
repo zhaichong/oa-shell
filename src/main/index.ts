@@ -35,7 +35,7 @@ import { createWinFlash } from "../win-flash.js"
 import type { AIModel, AttendanceState, ConnectionConfig, DeskState } from "../shared/desk"
 import { preloadPath, projectRoot, rendererHtml, resourcePath } from "./paths"
 
-const APP_USER_MODEL_ID = "亚华 OA"
+const APP_USER_MODEL_ID = "OA"
 let integrations: ReturnType<typeof createIntegrationStore>
 let aiStore: ReturnType<typeof createAIStore>
 let aiService: ReturnType<typeof createAIService>
@@ -482,12 +482,12 @@ function ensureWindowsToastIdentity(): void {
   if (process.platform !== "win32") {
     return
   }
-  const shortcutPath = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", "亚华 OA.lnk")
+  const shortcutPath = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", "OA.lnk")
   const details = {
     target: process.execPath,
     cwd: app.isPackaged ? path.dirname(process.execPath) : projectRoot(),
     args: app.isPackaged ? "" : '"' + projectRoot() + '"',
-    description: "亚华 OA",
+    description: "OA",
     icon: resourcePath("assets", "oa-app.ico"),
     iconIndex: 0,
     appUserModelId: APP_USER_MODEL_ID
@@ -960,7 +960,7 @@ function updateTrayMenu(): void {
     return
   }
   const summary = attendanceSummary()
-  tray.setToolTip(attention.isUnread() ? "亚华 OA · 有新消息，点击查看" : "亚华 OA · " + summary)
+  tray.setToolTip(attention.isUnread() ? "OA · 有新消息，点击查看" : "OA · " + summary)
   const key = summary + "|" + String(data.panelOpen)
   if (key === trayMenuKey) {
     return
@@ -1184,7 +1184,7 @@ function createWindow(): void {
     y: Number.isInteger(bounds.y) && Number(bounds.y) >= 0 && Number(bounds.y) < 1400 ? bounds.y : undefined,
     minWidth: 1100,
     minHeight: 700,
-    title: "亚华 OA",
+    title: "OA",
     backgroundColor: "#ffffff",
     autoHideMenuBar: true,
     icon: resourcePath("assets", "icon.png")
@@ -1545,7 +1545,7 @@ function createTray(): void {
 }
 
 if (gotLock) {
-  app.setName("亚华 OA")
+  app.setName("OA")
   app.setAppUserModelId(APP_USER_MODEL_ID)
   app.whenReady().then(() => {
     const credentialCrypto = {

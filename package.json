@@ -1,9 +1,9 @@
 {
   "name": "oa-shell",
-  "productName": "亚华 OA",
+  "productName": "OA",
   "version": "0.1.0",
   "private": true,
-  "description": "亚华 OA 桌面壳和本机加班提醒",
+  "description": "OA 桌面壳和本机加班提醒",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

@@ -69,7 +69,7 @@ function createAttention({
           getTray().setImage(showIcon ? latest.normal : (latest.blank || latest.normal));
         }, 500);
       }
-      tray.setToolTip(unread ? "亚华 OA · 有新消息，点击查看" : "亚华 OA");
+      tray.setToolTip(unread ? "OA · 有新消息，点击查看" : "OA");
     }
   }
 

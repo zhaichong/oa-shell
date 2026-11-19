@@ -36,8 +36,6 @@ const GENERIC_SENDERS = new Set([
   "新消息",
   "消息提醒",
   "工作消息",
-  "亚华 OA",
-  "亚华OA",
   "OA",
   "消息通知"
 ]);
@@ -990,7 +988,7 @@ function buildPopupHtml() {
           <path d="M17.5 15.5h6.7c1.3 0 2.5.7 3.1 1.8L35 30.8V48c0 2-1.6 3.5-3.5 3.5h-2.4a3.5 3.5 0 0 1-3.5-3.5V34.6L15.3 19c-.9-1.6.3-3.5 2.2-3.5z" fill="#ffffff"></path>
           <circle cx="47.5" cy="46.5" r="4" fill="#63e6be"></circle>
         </svg>
-        <span>亚华 OA · 新消息</span>
+        <span>OA · 新消息</span>
       </div>
       <button id="popupClose" class="popup-close" type="button" aria-label="关闭消息提醒" title="关闭">×</button>
     </div>

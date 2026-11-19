@@ -490,7 +490,7 @@ function installClientBridge() {
     },
     invoke: function (channel, payload) {
       if (channel === "get-package-info") {
-        return Promise.resolve(window.__ET_PACKAGE_INFO || { name: "亚华 OA", version: "10.0.0" });
+        return Promise.resolve(window.__ET_PACKAGE_INFO || { name: "OA", version: "10.0.0" });
       }
       if (channel === "write-clipboard-text") {
         return writeClipboardText(payload && typeof payload === "object" ? payload.text : payload);
@@ -503,7 +503,7 @@ function installClientBridge() {
   };
   const appStub = {
     getVersion: function () { return "10.0.0"; },
-    getName: function () { return "亚华 OA"; },
+    getName: function () { return "OA"; },
     getPath: function () { return ""; },
     relaunch: noop,
     exit: noop,
@@ -684,7 +684,7 @@ function installClientBridge() {
     }
     return {};
   };
-  window.__ET_PACKAGE_INFO = { name: "亚华 OA", version: "10.0.0" };
+  window.__ET_PACKAGE_INFO = { name: "OA", version: "10.0.0" };
   window.__ET_PHOTO_MIN_WINDOW_SIZE = [800, 540];
   window.__ET_PHOTO_VIEW_CUSTOMDOWNLOAD = true;
   window.__ET_COPY_IMAGE_SUPPORT = true;
