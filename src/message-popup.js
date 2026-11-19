@@ -36,6 +36,8 @@ const GENERIC_SENDERS = new Set([
   "新消息",
   "消息提醒",
   "工作消息",
+  "亚华 OA",
+  "亚华OA",
   "OA",
   "消息通知"
 ]);

@@ -465,14 +465,6 @@ function layoutUrl(): string {
   }
 }
 
-function configuredHost(): string {
-  try {
-    return new URL(layoutUrl()).hostname
-  } catch (error) {
-    return ""
-  }
-}
-
 function withPcClient(agent: string): string {
   const stripped = String(agent || "").replace(/\s+weapp-pc\/\S+/g, "").replace(/\s{2,}/g, " ").trim()
   return stripped + " weapp-pc/10.0.0/oa-shell"
@@ -482,7 +474,12 @@ function ensureWindowsToastIdentity(): void {
   if (process.platform !== "win32") {
     return
   }
-  const shortcutPath = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", "OA.lnk")
+  const programs = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs")
+  const legacyShortcut = path.join(programs, "亚华 OA.lnk")
+  if (fs.existsSync(legacyShortcut)) {
+    fs.rmSync(legacyShortcut, { force: true })
+  }
+  const shortcutPath = path.join(programs, "OA.lnk")
   const details = {
     target: process.execPath,
     cwd: app.isPackaged ? path.dirname(process.execPath) : projectRoot(),
@@ -682,7 +679,7 @@ async function openAssistantPage(target: string): Promise<string> {
   }
   showWindow()
   if (target === "home") {
-    await oaView.webContents.loadURL(data.settings.oaUrl || "https://oa.yarward.com:35877/sp/em/main")
+    await oaView.webContents.loadURL(layoutUrl())
     return "正在打开 OA 首页"
   }
   const script = "(() => { var node = document.querySelector('a[title=\"工作消息\"]'); if (node) { node.click(); return true; } return false; })()"
@@ -1085,7 +1082,7 @@ function createViews(): void {
   oaSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const allowed = new Set(["notifications", "media", "clipboard-read", "clipboard-sanitized-write", "fullscreen"])
     const host = hostOf(webContents) || hostFrom(details)
-    callback(Boolean(configuredHost()) && host === configuredHost() && allowed.has(permission))
+    callback(host === "oa.yarward.com" && allowed.has(permission))
   })
   oaView = new WebContentsView({ webPreferences: oaWebPreferences() })
   mainWindow?.contentView.addChildView(oaView)
@@ -1164,7 +1161,7 @@ function createViews(): void {
     }
   })
   oaView.webContents.setUserAgent(clientAgent)
-  oaView.webContents.loadURL(data.settings.oaUrl || "https://oa.yarward.com:35877/sp/em/main")
+  oaView.webContents.loadURL(layoutUrl())
 }
 
 function hostFrom(details: { requestingUrl?: string } | undefined): string {
@@ -1536,6 +1533,76 @@ function registerIpc(): void {
   })
 }
 
+const LEGACY_PROFILE_NAME = "亚华 OA"
+
+function legacyProfileDir(): string {
+  return path.join(app.getPath("appData"), LEGACY_PROFILE_NAME)
+}
+
+function importLegacyProfileFiles(): void {
+  const fromDir = legacyProfileDir()
+  if (!fs.existsSync(fromDir)) {
+    return
+  }
+  const userData = app.getPath("userData")
+  for (const name of ["integrations.json", "ai-settings.json", "ai-requests.jsonl"]) {
+    const from = path.join(fromDir, name)
+    const to = path.join(userData, name)
+    if (fs.existsSync(from) && !fs.existsSync(to)) {
+      fs.copyFileSync(from, to)
+    }
+  }
+  const sandboxFrom = path.join(fromDir, "ai-sandbox")
+  const sandboxTo = path.join(userData, "ai-sandbox")
+  if (fs.existsSync(sandboxFrom) && !fs.existsSync(sandboxTo)) {
+    fs.cpSync(sandboxFrom, sandboxTo, { recursive: true })
+  }
+}
+
+function mergeLegacyOvertime(current: AppData): AppData {
+  const legacyFile = path.join(legacyProfileDir(), "overtime.json")
+  if (!fs.existsSync(legacyFile)) {
+    return current
+  }
+  const legacy = createStore(legacyFile).load() as unknown as AppData
+  const submitted = { ...(current.submittedOvertimeDates || {}) }
+  let changed = false
+  for (const [key, value] of Object.entries(legacy.submittedOvertimeDates || {})) {
+    if (!submitted[key]) {
+      submitted[key] = value
+      changed = true
+    }
+  }
+  const days = { ...current.days }
+  for (const [key, value] of Object.entries(legacy.days || {})) {
+    if (!days[key]) {
+      days[key] = value
+      changed = true
+    }
+  }
+  const reminders = { ...current.reminders }
+  for (const [key, value] of Object.entries(legacy.reminders || {})) {
+    if (!reminders[key]) {
+      reminders[key] = value
+      changed = true
+    }
+  }
+  let tasks = current.tasks
+  if (tasks.length === 0 && legacy.tasks.length > 0) {
+    tasks = legacy.tasks
+    changed = true
+  }
+  let assistantAvatar = current.assistantAvatar
+  if (assistantAvatar === "preset:default" && legacy.assistantAvatar && legacy.assistantAvatar !== "preset:default") {
+    assistantAvatar = legacy.assistantAvatar
+    changed = true
+  }
+  if (!changed) {
+    return current
+  }
+  return { ...current, submittedOvertimeDates: submitted, days, reminders, tasks, assistantAvatar }
+}
+
 function createTray(): void {
   trayIcon = nativeImage.createFromPath(resourcePath("assets", "icon.png")).resize({ width: 16, height: 16 })
   trayBlankIcon = nativeImage.createFromBitmap(Buffer.alloc(16 * 16 * 4), { width: 16, height: 16 })
@@ -1557,6 +1624,7 @@ if (gotLock) {
         try { return (await safeStorage.decryptStringAsync(cipher)).result } catch { throw new Error("凭证无法解密，请在原系统重新填写凭证") }
       }
     }
+    importLegacyProfileFiles()
     integrations = createIntegrationStore(path.join(app.getPath("userData"), "integrations.json"), credentialCrypto)
     aiStore = createAIStore(path.join(app.getPath("userData"), "ai-settings.json"), credentialCrypto)
     aiService = createAIService(aiStore, (url, options) => session.fromPartition("ai-gateway").fetch(String(url), options), entry => {
@@ -1566,7 +1634,7 @@ if (gotLock) {
     })
     sandboxRunner = createCodexRunner(path.join(app.getPath("userData"), "ai-sandbox"))
     store = createStore(path.join(app.getPath("userData"), "overtime.json"))
-    data = store.load() as unknown as AppData
+    data = store.save(mergeLegacyOvertime(store.load() as unknown as AppData)) as unknown as AppData
     data.panelOpen = false
     boundsSaver = createBoundsSaver(rememberBounds, 400)
     ensureWindowsToastIdentity()

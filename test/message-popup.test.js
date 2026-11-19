@@ -262,7 +262,7 @@ test("normalizeMessagePayload handles Notification, nested payloads, colon split
     sender: "王五",
     content: "文件发你了"
   });
-  assert.deepEqual(normalizeMessagePayload("OA", { body: "赵六：请在 OA 上确认" }), {
+  assert.deepEqual(normalizeMessagePayload("亚华 OA", { body: "赵六：请在 OA 上确认" }), {
     sender: "赵六",
     content: "请在 OA 上确认"
   });
