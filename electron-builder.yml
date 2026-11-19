@@ -1,0 +1,29 @@
+appId: com.yarward.oa-shell
+productName: 亚华 OA
+directories:
+  buildResources: assets
+  output: dist
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+extraResources:
+  - from: assets
+    to: oa-shell/assets
+    filter:
+      - icon.png
+      - icon.svg
+      - oa-app.ico
+  - from: resources
+    to: oa-shell/resources
+win:
+  executableName: oa-shell
+  icon: assets/oa-app.ico
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+npmRebuild: false

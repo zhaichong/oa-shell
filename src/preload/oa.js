@@ -1,4 +1,4 @@
-require("./oa-bridge");
+require("../oa-bridge");
 (function () {
   var TARGET = "/api/em/msg/getMsgInfo";
   var CLOSE_KEY = "CLOSE_WEB_IM_VALUE";
@@ -154,3 +154,72 @@ require("./oa-bridge");
     };
   }
 })();
+
+const { ipcRenderer } = require("electron");
+const { installAssistantPin } = require("../assistant-pin");
+const { installImagePreview } = require("../image-preview");
+const { extractDomSessionMessage, installDomMessageObserver } = require("../message-popup");
+const { installOvertimeFlowMonitor } = require("../overtime-flows");
+
+const imagePreview = installImagePreview(window);
+ipcRenderer.on("oa:image-preview-ready", () => imagePreview.finish());
+
+installOvertimeFlowMonitor(window, (payload) => {
+  ipcRenderer.send("oa:overtime-flows", payload);
+});
+
+window.__extractOaDomMessage = () => extractDomSessionMessage(document);
+
+installDomMessageObserver(document, (msg) => {
+  if (typeof window.__noteOaMessageSent === "function") {
+    window.__noteOaMessageSent();
+  }
+  ipcRenderer.send("oa:message", msg);
+  ipcRenderer.send("oa:attention");
+});
+
+function focusSessionBySender(sender) {
+  const name = String(sender || "").replace(/\s+/g, " ").trim();
+  if (!name) {
+    return false;
+  }
+  const items = document.querySelectorAll(".weapp-em-im-main-layout .session-item, .weapp-main-em:not(.im-hide) .session-item");
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item.id === "oa-shell-assistant" || item.classList.contains("oa-assistant-pin")) {
+      continue;
+    }
+    const nameEl = item.querySelector(".name .span-text") || item.querySelector(".name");
+    const text = nameEl ? String(nameEl.textContent || "").replace(/\s+/g, " ").trim() : "";
+    if (text === name) {
+      if (!item.classList.contains("is-active")) {
+        item.click();
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+ipcRenderer.on("oa:popup-click", (_event, payload) => {
+  const clicked = typeof window.__triggerOaNoticeClick === "function" && window.__triggerOaNoticeClick(payload);
+  const sender = payload && typeof payload.sender === "string" ? payload.sender : "";
+  if (!focusSessionBySender(sender) && !clicked) {
+    const msgLink = document.querySelector('a[title="工作消息"]');
+    if (msgLink) {
+      msgLink.click();
+    }
+  }
+});
+
+installAssistantPin({
+  open: function () {
+    ipcRenderer.send("assistant:open");
+  },
+  close: function () {
+    ipcRenderer.send("assistant:close");
+  },
+  bounds: function (rect) {
+    ipcRenderer.send("assistant:bounds", rect);
+  }
+});

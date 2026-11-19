@@ -1,2 +1,9 @@
 node_modules
+out
+dist
 *.log
+.eslintcache
+tmp-*
+.tmp-*
+.codex-tmp/
+build/

@@ -1,39 +1,53 @@
 const { spawn } = require("child_process");
-const path = require("path");
 
-function createWinFlash() {
+function createWinFlash(scriptPath, options = {}) {
+  if (!scriptPath) {
+    throw new Error("WinFlash script path is required");
+  }
+  const spawnImpl = options.spawn || spawn;
+  const timeoutMs = options.timeoutMs || 4000;
   let child = null;
   let buffer = "";
-  let pending = [];
+  const pending = [];
   let seenReady = false;
   let chain = Promise.resolve();
+
+  function settle(waiter, value) {
+    if (!waiter || waiter.settled) {
+      return;
+    }
+    waiter.settled = true;
+    clearTimeout(waiter.timer);
+    const index = pending.indexOf(waiter);
+    if (index >= 0) {
+      pending.splice(index, 1);
+    }
+    waiter.finish(value);
+  }
 
   function onLine(line) {
     if (!seenReady) {
       seenReady = true;
       return;
     }
-    const waiter = pending.shift();
-    if (waiter) {
-      waiter(line);
-    }
+    settle(pending[0], line);
   }
 
   function start() {
     if (child) {
       return;
     }
-    child = spawn("powershell.exe", [
+    child = spawnImpl("powershell.exe", [
       "-NoProfile",
       "-NoLogo",
       "-NonInteractive",
       "-ExecutionPolicy",
       "Bypass",
       "-File",
-      path.join(__dirname, "win-flash.ps1")
+      scriptPath
     ], {
       windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "ignore"]
     });
     child.stdout.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
@@ -48,9 +62,10 @@ function createWinFlash() {
       }
     });
     child.on("exit", () => {
+      const abandoned = pending.splice(0);
       child = null;
       seenReady = false;
-      pending.splice(0).forEach((waiter) => waiter(""));
+      abandoned.forEach((waiter) => settle(waiter, ""));
     });
   }
 
@@ -65,20 +80,11 @@ function createWinFlash() {
         settled = true;
         resolve(value);
       };
-      const timer = setTimeout(() => {
-        const index = pending.indexOf(finish);
-        if (index >= 0) {
-          pending.splice(index, 1);
-        }
-        finish("timeout");
-      }, 4000);
-      pending.push((value) => {
-        clearTimeout(timer);
-        finish(value);
-      });
-      if (!child || !child.stdin.writable) {
-        clearTimeout(timer);
-        finish("");
+      const waiter = { settled: false, finish, timer: null };
+      waiter.timer = setTimeout(() => settle(waiter, "timeout"), timeoutMs);
+      pending.push(waiter);
+      if (!child || !child.stdin || !child.stdin.writable) {
+        settle(waiter, "");
         return;
       }
       child.stdin.write(line + "\n");
@@ -96,6 +102,10 @@ function createWinFlash() {
     },
     stop(hwnd) {
       return ask("STOP " + hwnd);
+    },
+    setIcon(hwnd, iconPath) {
+      const icon = iconPath && iconPath !== "0" ? String(iconPath) : "0";
+      return ask("ICON " + hwnd + " " + icon);
     },
     close() {
       if (child) {

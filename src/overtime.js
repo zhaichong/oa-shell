@@ -1,3 +1,5 @@
+const { normalizeAvatar } = require("./assistant-avatar");
+
 const DEFAULT_SETTINGS = {
   oaUrl: "https://oa.yarward.com:35877/sp/em/main",
   workStart: "09:00",
@@ -109,6 +111,57 @@ function normalizeDay(input) {
   };
 }
 
+function normalizeAssistantTasks(input) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const seen = new Set();
+  const tasks = [];
+  input.forEach((item) => {
+    const source = item || {};
+    const at = normalizeClock(source.at);
+    const key = typeof source.dateKey === "string" && /^\d{4}-\d{2}-\d{2}$/.test(source.dateKey) ? source.dateKey : "";
+    const taskText = typeof source.text === "string" ? source.text.trim().slice(0, 40) : "";
+    const id = typeof source.id === "string" && /^[a-z0-9]{8,48}$/.test(source.id) ? source.id : "";
+    if (!at || !key || !taskText || !id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    tasks.push({
+      id,
+      at,
+      text: taskText,
+      dateKey: key,
+      fired: source.fired === true,
+      cancelled: source.cancelled === true
+    });
+  });
+  return tasks.slice(-30);
+}
+
+function normalizeSubmittedOvertimeDates(input) {
+  const out = {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return out;
+  }
+  Object.keys(input).slice(0, 200).forEach((key) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+      return;
+    }
+    const entry = input[key];
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    out[key] = {
+        ...(typeof entry.period === "string" && entry.period ? { period: entry.period.slice(0, 48) } : {}),
+      flowNo: typeof entry.flowNo === "string" ? entry.flowNo.slice(0, 40) : "",
+      title: typeof entry.title === "string" ? entry.title.slice(0, 80) : "",
+      at: typeof entry.at === "string" ? entry.at.slice(0, 40) : ""
+    };
+  });
+  return out;
+}
+
 function normalizeData(input) {
   const source = input || {};
   const days = {};
@@ -135,7 +188,10 @@ function normalizeData(input) {
     days,
     reminders,
     window: source.window && typeof source.window === "object" ? source.window : null,
-    panelOpen: source.panelOpen === true
+    panelOpen: source.panelOpen === true,
+    assistantAvatar: normalizeAvatar(source.assistantAvatar),
+    tasks: normalizeAssistantTasks(source.tasks),
+    submittedOvertimeDates: normalizeSubmittedOvertimeDates(source.submittedOvertimeDates)
   };
 }
 
@@ -314,5 +370,7 @@ module.exports = {
   normalizeData,
   normalizeDay,
   buildSnapshot,
-  collectReminders
+  collectReminders,
+  normalizeAssistantTasks,
+  normalizeOaUrl
 };

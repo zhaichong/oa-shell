@@ -4,16 +4,34 @@
   "version": "0.1.0",
   "private": true,
   "description": "亚华 OA 桌面壳和本机加班提醒",
-  "main": "src/main.js",
+  "main": "./out/main/index.js",
   "scripts": {
-    "start": "electron .",
-    "test": "node --test test/*.test.js"
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "prestart": "electron-vite build",
+    "build": "electron-vite build",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test": "node --test test/*.test.js",
+    "test:preview": "electron test/image-preview-browser.cjs",
+    "test:integrations": "npm run build && electron test/integrations-browser.cjs",
+    "dist:dir": "npm run build && electron-builder --win --dir",
+    "dist:win": "npm run build && electron-builder --win"
   },
   "volta": {
     "node": "22.22.2",
     "npm": "10.9.4"
   },
   "devDependencies": {
-    "electron": "33.4.11"
+    "@types/node": "^22.19.2",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^6.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vue": "^3.5.44",
+    "vue-tsc": "^3.3.13"
   }
 }
