@@ -158,8 +158,15 @@ require("../oa-bridge");
 const { ipcRenderer } = require("electron");
 const { installAssistantPin } = require("../assistant-pin");
 const { installImagePreview } = require("../image-preview");
+const { installChatClipboard } = require("../chat-clipboard");
 const { extractDomSessionMessage, installDomMessageObserver } = require("../message-popup");
 const { installOvertimeFlowMonitor } = require("../overtime-flows");
+
+installChatClipboard(window, {
+  writeText: text => ipcRenderer.invoke("oa:clipboard-write-text", text),
+  writeImage: data => ipcRenderer.invoke("oa:clipboard-write-image", data),
+  copyImageAt: (x, y) => ipcRenderer.invoke("oa:clipboard-copy-image-at", x, y)
+});
 
 const imagePreview = installImagePreview(window);
 ipcRenderer.on("oa:image-preview-ready", () => imagePreview.finish());

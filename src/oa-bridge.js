@@ -621,6 +621,14 @@ function installClientBridge() {
     return true;
   }
 
+  async function writeClipboardImage(image) {
+    const data = typeof image === "string" ? image : image?.toDataURL?.();
+    if (typeof data !== "string" || await ipcRenderer.invoke("oa:clipboard-write-image", data) !== true) {
+      throw new Error("未能复制图片到系统剪贴板");
+    }
+    return true;
+  }
+
   const remote = {
     app: appStub,
     dialog: dialogStub,
@@ -637,9 +645,13 @@ function installClientBridge() {
         return { workAreaSize: { width: window.screen.width, height: window.screen.height } };
       }
     },
-    nativeImage: { createFromDataURL: function () { return null; } },
+    nativeImage: {
+      createFromDataURL(data) {
+        return { toDataURL: () => data, isEmpty: () => !/^data:image\/(?:png|jpeg);base64,/i.test(data) };
+      }
+    },
     clipboard: {
-      writeImage: noop,
+      writeImage: writeClipboardImage,
       writeText: writeClipboardText,
       readText: function () { return ""; }
     },

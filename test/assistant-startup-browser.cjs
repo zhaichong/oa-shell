@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { app, BaseWindow, BrowserWindow, clipboard, ipcMain, session, webContents } = require("electron");
+const { app, BaseWindow, BrowserWindow, clipboard, ClipboardItem, ipcMain, nativeImage, session, webContents } = require("electron");
 
 // Exercise the production main entry with a disposable OA session and a local fixture.
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "oa-startup-test-"));
@@ -28,6 +28,11 @@ const workDay = month + "-01";
 app.whenReady().then(() => {
   session.fromPartition("persist:oa").protocol.handle("https", async request => {
     const url = new URL(request.url);
+    if (url.pathname === "/fixture-copy.png") {
+      const bitmap = Buffer.from([0, 0, 255, 255, 0, 255, 0, 255]);
+      const png = nativeImage.createFromBitmap(bitmap, { width: 2, height: 1 }).toPNG();
+      return new Response(new Uint8Array(png), { headers: { "Content-Type": "image/png" } });
+    }
     if (url.pathname.endsWith("getCalendarDetailByDate")) {
       const query = await request.json();
       return Response.json({ code: 200, data: { signInfo: query.date === workDay ? [{ signTime: "20:17" }] : [] } });
@@ -104,24 +109,80 @@ async function verify() {
   console.log("Foreground suppressed; background group title, emoji and click-to-conversation verified");
   // Opt in only with a disposable system clipboard.
   if (process.env.OA_TEST_CLIPBOARD === "1") {
-    const link = "https://example.test/knowledge/full-link?doc=123456789&lang=zh#details";
-    await oa.executeJavaScript(`(() => {
-      const anchor = document.createElement("a");
-      anchor.textContent = "https://example.test/…";
-      anchor.href = ${JSON.stringify(link)};
-      const button = document.createElement("button");
-      button.onclick = () => window.emRequire("electron").clipboard.writeText(anchor.href);
-      const target = document.createElement("textarea");
-      target.id = "paste-check";
-      document.body.append(anchor, button, target);
-      button.click();
-      target.focus();
-    })()`, true);
-    await waitFor(async () => (await clipboard.readText()) === link);
-    assert.equal(await clipboard.readText(), link);
-    oa.paste();
-    await waitFor(() => oa.executeJavaScript("document.querySelector('#paste-check').value === " + JSON.stringify(link)));
-    console.log("Full card link verified by native clipboard read and paste");
+    const previous = await Promise.all((await clipboard.read()).map(async item => {
+      const entries = await Promise.all(item.types.map(async type => [type, await item.getType(type)]));
+      return new ClipboardItem(Object.fromEntries(entries));
+    }));
+    try {
+      const link = "https://example.test/knowledge/full-link?doc=123456789&lang=zh#details";
+      await oa.executeJavaScript(`(() => {
+        const anchor = document.createElement("a");
+        anchor.textContent = "https://example.test/…";
+        anchor.href = ${JSON.stringify(link)};
+        const button = document.createElement("button");
+        button.onclick = () => window.emRequire("electron").clipboard.writeText(anchor.href);
+        const target = document.createElement("textarea");
+        target.id = "paste-check";
+        document.body.append(anchor, button, target);
+        button.click();
+        target.focus();
+      })()`, true);
+      await waitFor(async () => (await clipboard.readText()) === link);
+      assert.equal(await clipboard.readText(), link);
+      oa.paste();
+      await waitFor(() => oa.executeJavaScript("document.querySelector('#paste-check').value === " + JSON.stringify(link)));
+      console.log("Full card link verified by native clipboard read and paste");
+      await oa.executeJavaScript("(" + (() => {
+        document.activeElement.blur();
+        const chat = document.createElement("div");
+        chat.innerHTML = '<div id="copy-text" class="oli-message"><div class="content is-text">/theme1/home1<br>保留正文里的 svg<svg><title>svg</title></svg></div></div>' +
+          '<div class="oli-message"><div class="image-content"><img id="copy-image" width="160" height="80"></div></div>' +
+          '<button id="fixture-copy" role="menuitem"><svg><title>svg</title></svg><span>复制</span></button>';
+        document.body.append(chat);
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector("#copy-text .content"));
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        return true;
+      }).toString() + ")()", true);
+      oa.copy();
+      const text = "/theme1/home1\n保留正文里的 svg";
+      await waitFor(async () => (await clipboard.readText()).replace(/\r\n/g, "\n") === text);
+      await oa.executeJavaScript("(" + (async () => {
+        getSelection().removeAllRanges();
+        const image = document.querySelector("#copy-image");
+        image.src = "/fixture-copy.png";
+        await image.decode();
+        image.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
+        document.querySelector("#fixture-copy span").click();
+      }).toString() + ")()", true);
+      await waitFor(() => clipboard.has("image/png"));
+      const items = await clipboard.read();
+      const png = await items.find(item => item.types.includes("image/png")).getType("image/png");
+      const copiedImage = nativeImage.createFromBuffer(Buffer.from(await png.arrayBuffer()));
+      assert.deepEqual(copiedImage.getSize(), { width: 2, height: 1 });
+      await clipboard.writeText("OA clipboard fixture");
+      await oa.executeJavaScript("(" + (async () => {
+        const image = document.querySelector("#copy-image");
+        image.src = "https://image.example.test/fixture-copy.png";
+        await image.decode();
+        const canvas = document.createElement("canvas");
+        canvas.getContext("2d").drawImage(image, 0, 0);
+        try {
+          canvas.toDataURL();
+          throw new Error("Fixture image should block canvas readback");
+        } catch (error) {
+          if (error.name !== "SecurityError") throw error;
+        }
+        image.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
+        document.querySelector("#fixture-copy span").click();
+      }).toString() + ")()", true);
+      await waitFor(() => clipboard.has("image/png"));
+      console.log("Chat selection and image context menu verified in the Windows clipboard");
+    } finally {
+      if (previous.length) await clipboard.write(previous);
+      else clipboard.clear();
+    }
   }
   const event = { sender: oa };
   ipcMain.emit("oa:photo-ipc", event, "show-photo-view", {});

@@ -3,6 +3,7 @@ import {
   BaseWindow,
   BrowserWindow,
   clipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   Menu,
@@ -1375,12 +1376,14 @@ function registerIpc(): void {
       minimized: Boolean(win && win.isMinimized())
     }
   })
+  function isOaClipboardSender(event: Electron.IpcMainInvokeEvent): boolean {
+    const source = event.senderFrame
+    const fromChat = event.sender === oaView?.webContents || event.sender === photoViewWindow?.webContents || oaPopups.has(event.sender)
+    return Boolean(fromChat && source && new URL(source.url).origin === new URL(layoutUrl()).origin)
+  }
   ipcMain.handle("oa:clipboard-write-text", async (event, text: unknown) => {
     try {
-      const source = event.senderFrame
-      const fromChat = event.sender === oaView?.webContents || event.sender === photoViewWindow?.webContents || oaPopups.has(event.sender)
-      if (fromChat && source && new URL(source.url).origin === new URL(layoutUrl()).origin &&
-          typeof text === "string" && text.length > 0 && !text.includes("\0")) {
+      if (isOaClipboardSender(event) && typeof text === "string" && text.length > 0 && !text.includes("\0")) {
         await clipboard.writeText(text)
         const actual = await clipboard.readText()
         return actual === text || actual.replace(/\r\n/g, "\n") === text.replace(/\r\n/g, "\n")
@@ -1388,6 +1391,31 @@ function registerIpc(): void {
     } catch {
       // The OS may refuse a write while the clipboard is in use.
     }
+    return false
+  })
+  ipcMain.handle("oa:clipboard-write-image", async (event, data: unknown) => {
+    try {
+      if (!isOaClipboardSender(event) || typeof data !== "string" || data.length > 24_000_000 ||
+          !/^data:image\/(?:png|jpeg);base64,/i.test(data)) return false
+      const image = nativeImage.createFromDataURL(data)
+      if (image.isEmpty()) return false
+      const png = new Blob([new Uint8Array(image.toPNG())], { type: "image/png" })
+      await clipboard.write([new ClipboardItem({ "image/png": png })])
+      return await clipboard.has("image/png")
+    } catch { return false }
+  })
+  ipcMain.handle("oa:clipboard-copy-image-at", async (event, x: unknown, y: unknown) => {
+    try {
+      if (!isOaClipboardSender(event) || event.senderFrame !== event.sender.mainFrame ||
+          typeof x !== "number" || typeof y !== "number" ||
+          !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 16000 || y > 16000) return false
+      const zoom = event.sender.getZoomFactor()
+      event.sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom))
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 35))
+        if (await clipboard.has("image/png")) return true
+      }
+    } catch { return false }
     return false
   })
   ipcMain.on("oa:attention", () => {
