@@ -250,7 +250,6 @@ test("photo-view IPC channels and window oliType are bridged cleanly", () => {
   assert.deepEqual(
     mainEnv.sent.filter((e) => e.channel === "oa:photo-ipc").map((e) => e.args),
     [
-      ["init-photo-view", undefined],
       ["show-photo-view", { url: "https://oa.yarward.com/img.png" }]
     ]
   );

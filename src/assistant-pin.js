@@ -190,6 +190,7 @@ function installAssistantPin(bridge, doc) {
   let currentAvatar = DEFAULT_AVATAR
   let observer = null
   let observed = null
+  let ensureQueued = false
 
   function pinNode() {
     return page.getElementById(PIN_ID)
@@ -361,7 +362,14 @@ function installAssistantPin(bridge, doc) {
       }
       observed = root
       observer = new MutationObserver(function () {
-        ensure()
+        if (ensureQueued) {
+          return
+        }
+        ensureQueued = true
+        page.defaultView.requestAnimationFrame(function () {
+          ensureQueued = false
+          ensure()
+        })
       })
       observer.observe(root, { childList: true, subtree: true })
     }

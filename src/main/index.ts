@@ -23,7 +23,6 @@ import { monthRange, normalizeAttendance, pageFetchExpression } from "../attenda
 import { createAttention } from "../attention.js"
 import { createBoundsSaver } from "../bounds-saver.js"
 import { addReminder, cancelReminder, collectDueReminders, formatOvertime, helpText, parseCommand } from "../assistant.js"
-import { buildSnapshot, collectReminders } from "../overtime.js"
 import { createStore } from "../store.js"
 import { createIntegrationStore, previewTasks } from "../integrations.js"
 import { createAIStore, createAIService } from "../ai-gateway.js"
@@ -36,6 +35,8 @@ import type { AIModel, AttendanceState, ConnectionConfig, DeskState } from "../s
 import { preloadPath, projectRoot, rendererHtml, resourcePath } from "./paths"
 
 const APP_USER_MODEL_ID = "OA"
+const PHOTO_IDLE_MS = 30_000
+const SIDEBAR_IDLE_MS = 60_000
 let integrations: ReturnType<typeof createIntegrationStore>
 let aiStore: ReturnType<typeof createAIStore>
 let aiService: ReturnType<typeof createAIService>
@@ -150,13 +151,6 @@ interface AppData {
   assistantAvatar: string
 }
 
-interface Reminder {
-  id: string
-  dateKey: string
-  title: string
-  body: string
-}
-
 interface AssistantTask {
   id: string
   at: string
@@ -175,6 +169,8 @@ let mainWindow: BaseWindow | null = null
 let tray: Tray | null = null
 let oaView: WebContentsView | null = null
 let sidebarView: WebContentsView | null = null
+let sidebarIdleTimer: ReturnType<typeof setTimeout> | null = null
+let sidebarSession: string | null = null
 let store!: ReturnType<typeof createStore>
 let data!: AppData
 let quitting = false
@@ -201,6 +197,7 @@ let popupReady = false
 let pendingPopupPayload: { sender: string; content: string } | null = null
 
 let photoViewWindow: BrowserWindow | null = null
+let photoIdleTimer: ReturnType<typeof setTimeout> | null = null
 let photoViewLoaded = false
 let pendingPhotoParams: unknown = null
 let photoParamsTimer: NodeJS.Timeout | null = null
@@ -275,6 +272,18 @@ function ensurePhotoViewWindow(): BrowserWindow {
       sendPhotoParams(win, pendingPhotoParams)
     }
   })
+  const cancelIdleReclaim = (): void => {
+    if (photoIdleTimer) clearTimeout(photoIdleTimer)
+    photoIdleTimer = null
+  }
+  win.on("show", cancelIdleReclaim)
+  win.on("hide", () => {
+    cancelIdleReclaim()
+    photoIdleTimer = setTimeout(() => {
+      photoIdleTimer = null
+      if (!win.isDestroyed() && !win.isVisible()) win.destroy()
+    }, PHOTO_IDLE_MS)
+  })
   win.on("close", (event) => {
     if (!quitting) {
       event.preventDefault()
@@ -287,6 +296,7 @@ function ensurePhotoViewWindow(): BrowserWindow {
     }
   })
   win.on("closed", () => {
+    cancelIdleReclaim()
     clearPhotoParamsTimer()
     if (photoViewWindow === win) {
       photoViewWindow = null
@@ -767,7 +777,7 @@ function runAssistantTasks(): void {
   }
   data.tasks = result.tasks
   result.due.forEach((task) => {
-    notify({ title: "分身提醒", body: task.text }, { attention: false })
+    notify({ title: "分身提醒", body: task.text })
   })
   data = store.save(data) as unknown as AppData
   publish()
@@ -794,11 +804,6 @@ function openWorkMessages(): void {
     messageOpening = false
     if (clicked) {
       openedMessages = true
-      setTimeout(() => {
-        if (!quitting && (!photoViewWindow || photoViewWindow.isDestroyed())) {
-          ensurePhotoViewWindow()
-        }
-      }, 500)
       return
     }
     setTimeout(openWorkMessages, 700)
@@ -810,7 +815,6 @@ function openWorkMessages(): void {
 
 function snapshot(): DeskState {
   return {
-    ...(buildSnapshot(data, new Date()) as Record<string, unknown>),
     oa: oaStatus,
     panelOpen: data.panelOpen === true,
     avatar: normalizeAvatar(data.assistantAvatar),
@@ -978,7 +982,7 @@ function updateTrayMenu(): void {
   ]))
 }
 
-function notify(reminder: { title: string; body: string }, options?: { attention?: boolean }): void {
+function notify(reminder: { title: string; body: string }): void {
   if (!Notification.isSupported()) {
     return
   }
@@ -989,24 +993,6 @@ function notify(reminder: { title: string; body: string }, options?: { attention
   })
   notice.on("click", showWindow)
   notice.show()
-  if (!options || options.attention !== false) {
-    attention.attractAttention().catch(() => {})
-  }
-}
-
-function runReminders(): void {
-  const due = collectReminders(data, new Date()) as Reminder[]
-  if (!due.length) {
-    publish()
-    return
-  }
-  due.forEach((reminder) => {
-    data.reminders[reminder.dateKey] = data.reminders[reminder.dateKey] || {}
-    data.reminders[reminder.dateKey][reminder.id] = true
-    notify(reminder)
-  })
-  data = store.save(data) as unknown as AppData
-  publish()
 }
 
 function setAssistantOpen(open: boolean): void {
@@ -1014,6 +1000,8 @@ function setAssistantOpen(open: boolean): void {
   data.panelOpen = open
   trayMenuKey = ""
   if (open) {
+    if (sidebarIdleTimer) clearTimeout(sidebarIdleTimer)
+    sidebarIdleTimer = null
     showWindow()
     openWorkMessages()
     if (changed) {
@@ -1024,6 +1012,7 @@ function setAssistantOpen(open: boolean): void {
     setTimeout(requestAssistantPane, 1400)
   }
   layout()
+  if (!open && changed) scheduleSidebarReclaim()
   if (changed) {
     persist()
   }
@@ -1073,6 +1062,32 @@ function ensureSidebarView(hostWindow: BaseWindow): WebContentsView {
     sidebarView.webContents.loadFile(rendererHtml())
   }
   return sidebarView
+}
+
+function releaseSidebarView(view: WebContentsView): void {
+  sidebarView = null
+  mainWindow?.contentView.removeChildView(view)
+  if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false })
+}
+
+function scheduleSidebarReclaim(): void {
+  const view = sidebarView
+  if (!view || sidebarIdleTimer) return
+  const timer = setTimeout(async () => {
+    const session: unknown = await view.webContents
+      .executeJavaScript("window.__captureAssistantSession?.()")
+      .catch(() => null)
+    if (sidebarIdleTimer !== timer) return
+    sidebarIdleTimer = null
+    if (quitting || data.panelOpen || sidebarView !== view) return
+    if (!view.webContents.isDestroyed() && (typeof session !== "string" || session.length > 1_000_000)) {
+      scheduleSidebarReclaim()
+      return
+    }
+    sidebarSession = typeof session === "string" ? session : null
+    releaseSidebarView(view)
+  }, SIDEBAR_IDLE_MS)
+  sidebarIdleTimer = timer
 }
 
 function createViews(): void {
@@ -1155,7 +1170,11 @@ function createViews(): void {
     publish()
     openWorkMessages()
     setTimeout(() => refreshAttendance().catch(() => {}), 1500)
-    setTimeout(() => refreshAttendance().catch(() => {}), 8000)
+    setTimeout(() => {
+      if (oaStatus.state === "ready" && attendance.state !== "ready") {
+        refreshAttendance().catch(() => {})
+      }
+    }, 8000)
     if (mainWindow && !mainWindow.isFocused()) {
       syncPageFocus(false)
     }
@@ -1333,6 +1352,12 @@ function registerIpc(): void {
     return true
   })
   ipcMain.handle("state:get", () => snapshot())
+  ipcMain.handle("assistant:restore-session", (event) => {
+    if (event.sender !== sidebarView?.webContents || event.senderFrame !== event.sender.mainFrame) return null
+    const saved = sidebarSession
+    sidebarSession = null
+    return saved
+  })
   ipcMain.handle("panel:toggle", () => {
     togglePanel()
     if (data.panelOpen) {
@@ -1370,10 +1395,6 @@ function registerIpc(): void {
   ipcMain.on("oa:photo-ipc", (event, channel: unknown, payload: unknown) => {
     const allowedSender = event.sender === oaView?.webContents || event.sender === photoViewWindow?.webContents
     if (!allowedSender || typeof channel !== "string") {
-      return
-    }
-    if (channel === "init-photo-view") {
-      ensurePhotoViewWindow()
       return
     }
     if (channel === "show-photo-view") {
@@ -1526,6 +1547,10 @@ function registerIpc(): void {
     if (!pane) {
       return
     }
+    if (messagePane && pane.x === messagePane.x && pane.y === messagePane.y &&
+      pane.width === messagePane.width && pane.height === messagePane.height) {
+      return
+    }
     messagePane = pane
     if (data.panelOpen) {
       layout()
@@ -1655,6 +1680,9 @@ if (gotLock) {
     aiService?.cancel()
     sandboxRunner?.cancel()
     quitting = true
+    if (sidebarIdleTimer) clearTimeout(sidebarIdleTimer)
+    sidebarIdleTimer = null
+    if (sidebarView) releaseSidebarView(sidebarView)
     boundsSaver?.flush()
     attention.stopAttention()
     popupController.dismiss()

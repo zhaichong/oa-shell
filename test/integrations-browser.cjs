@@ -52,6 +52,7 @@ app.whenReady().then(async () => {
   const browserResult = await previewTasks(normalizeConnection({ name: "Cookie test", kind: "json", baseUrl, allowHttp: true, auth: "browser", endpoint: "/cookie-tasks", mappings: { records: "data.items", title: "title" } }), "", (url, options) => network.fetch(String(url), options));
   assert.equal(browserResult.items.length, 1);
   ipcMain.handle("state:get", () => ({ panelOpen: true, attendance: { state: "ready", details: [] } }));
+  ipcMain.handle("assistant:restore-session", () => null);
   ipcMain.handle("connections:list", () => store.list());
   ipcMain.handle("connections:save", (_event, input) => store.save(input));
   ipcMain.handle("connections:preview", async (_event, id) => {

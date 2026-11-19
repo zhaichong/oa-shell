@@ -26,6 +26,12 @@ type Turn = {
   card?: DetailCard | null
 }
 
+declare global {
+  interface Window {
+    __captureAssistantSession?: () => string | null
+  }
+}
+
 const avatarPresets = [
   { id: "preset:default", label: "经典分身" },
   { id: "preset:orbit", label: "星轨" },
@@ -48,6 +54,7 @@ const avatarAnchor = ref<HTMLElement | null>(null)
 const thread = ref<HTMLElement | null>(null)
 const turns = ref<Turn[]>([])
 let turnId = 0
+let sessionRestoring = true
 const prompts = [
   { label: "本月加班", command: "/加班" },
   { label: "刷新出勤", command: "/刷新" },
@@ -106,10 +113,27 @@ onMounted(async () => {
     return
   }
   stopListening = window.desk.onState(receiveState)
+  window.__captureAssistantSession = () => {
+    if (sessionRestoring || commandBusy.value || settingsOpen.value || avatarBusy.value) return null
+    return JSON.stringify({ turns: turns.value, draft: command.value, turnId })
+  }
+  try {
+    const saved = await window.desk.restoreAssistantSession()
+    if (saved) {
+      const session = JSON.parse(saved) as { turns: Turn[]; draft: string; turnId: number }
+      turns.value = session.turns
+      command.value ||= session.draft
+      turnId = session.turnId
+      await scrollThread()
+    }
+  } finally {
+    sessionRestoring = false
+  }
   receiveState(await window.desk.getState())
 })
 
 onUnmounted(() => {
+  delete window.__captureAssistantSession
   window.removeEventListener("mousedown", onDocumentPointerDown)
   window.removeEventListener("keydown", onDocumentKeyDown)
   if (stopListening) {
@@ -270,7 +294,7 @@ async function scrollThread(): Promise<void> {
 
 async function runCommand(preset?: string): Promise<void> {
   const typed = (preset || command.value).trim()
-  if (!typed || commandBusy.value || !window.desk) {
+  if (!typed || sessionRestoring || commandBusy.value || !window.desk) {
     return
   }
   const resolved = resolveCommand(typed)

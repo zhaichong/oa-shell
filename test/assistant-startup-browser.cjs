@@ -12,8 +12,9 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const pages = () => webContents.getAllWebContents();
 const sidebar = () => pages().find(page => page.getURL().startsWith("file:"));
 
-async function waitFor(check) {
-  for (let i = 0; i < 150; i++) {
+async function waitFor(check, timeoutMs = 7500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     const result = await check();
     if (result) return result;
     await pause(50);
@@ -55,6 +56,11 @@ async function verify() {
     sidebarLoaded: Boolean(sidebar())
   }));
   assert.equal(Boolean(sidebar()), false, "chat-only startup must keep the assistant unloaded");
+  const photoView = () => pages().find(page => page.getURL().includes("/sp/em/photoview"));
+  assert.equal(photoView(), undefined, "chat-only startup must keep the photo viewer unloaded");
+  await oa.executeJavaScript('window.emRequire("electron").ipcRenderer.send("init-photo-view"); true');
+  await pause(100);
+  assert.equal(photoView(), undefined, "the OA init signal must not preload the photo viewer");
   // Opt in only with a disposable system clipboard.
   if (process.env.OA_TEST_CLIPBOARD === "1") {
     const link = "https://example.test/knowledge/full-link?doc=123456789&lang=zh#details";
@@ -77,6 +83,12 @@ async function verify() {
     console.log("Full card link verified by native clipboard read and paste");
   }
   const event = { sender: oa };
+  ipcMain.emit("oa:photo-ipc", event, "show-photo-view", {});
+  const firstPhoto = await waitFor(() => photoView() && !photoView().isLoading() && photoView());
+  ipcMain.emit("oa:photo-ipc", event, "close-photo-view");
+  ipcMain.emit("oa:photo-ipc", event, "show-photo-view", {});
+  assert.equal(photoView(), firstPhoto, "quick reopen must reuse the preview");
+  ipcMain.emit("oa:photo-ipc", event, "close-photo-view");
   ipcMain.emit("assistant:bounds", event, { x: 300, y: 60, width: 620, height: 440 });
   assert.equal(sidebar(), undefined);
   ipcMain.emit("assistant:open", event);
@@ -106,6 +118,33 @@ async function verify() {
   assert.deepEqual(Object.keys(saved.submittedOvertimeDates), [workDay]);
   assert.equal(saved.submittedOvertimeDates[workDay].period, "17:30–20:00");
   console.log("OA form popup updated the existing card, count and persisted work date");
+  const firstSidebarId = ready.id;
+  await ready.executeJavaScript(`(async () => {
+    document.querySelector(".settings-entry").click();
+    if (window.__captureAssistantSession() !== null) throw new Error("Settings must block reclaim");
+    document.querySelector(".settings-entry").click();
+    await Promise.resolve();
+    const composer = document.querySelector("#assistant-command");
+    composer.value = "未发送的分身草稿";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  ipcMain.emit("assistant:close", event);
+  await waitFor(() => firstPhoto.isDestroyed(), 35_000);
+  await waitFor(() => ready.isDestroyed(), 35_000);
+  assert.equal(photoView(), undefined);
+  assert.equal(sidebar(), undefined);
+  console.log("Idle preview and assistant web contents released");
+  ipcMain.emit("assistant:open", event);
+  const reopened = await waitFor(async () => {
+    const view = sidebar();
+    if (view && !view.isLoading() && await view.executeJavaScript(
+      'document.querySelector("#assistant-command")?.value === "未发送的分身草稿" && Boolean(document.querySelector(".record .application-badge"))'
+    )) return view;
+  });
+  assert.notEqual(reopened.id, firstSidebarId);
+  ipcMain.emit("oa:photo-ipc", event, "show-photo-view", {});
+  await waitFor(() => photoView() && !photoView().isLoading());
+  console.log("Both views reopened; assistant draft and conversation restored");
 }
 
 app.whenReady().then(verify).then(() => app.quit()).catch(error => {

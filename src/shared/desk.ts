@@ -34,6 +34,7 @@ export interface DeskState {
 
 export interface DeskApi {
   getState: () => Promise<DeskState>
+  restoreAssistantSession: () => Promise<string | null>
   togglePanel: () => Promise<DeskState>
   setAvatar: (avatar: string) => Promise<DeskState>
   chooseAvatar: () => Promise<DeskState | null>

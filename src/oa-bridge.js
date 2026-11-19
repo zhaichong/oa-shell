@@ -368,7 +368,6 @@ function installClientBridge() {
   }
 
   const PHOTO_CHANNELS = new Set([
-    "init-photo-view",
     "show-photo-view",
     "photo-view-params.success",
     "close-photo-view",

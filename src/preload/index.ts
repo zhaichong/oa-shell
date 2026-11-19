@@ -3,6 +3,7 @@ import type { DeskApi, DeskState } from "../shared/desk"
 
 const desk: DeskApi = {
   getState: () => ipcRenderer.invoke("state:get"),
+  restoreAssistantSession: () => ipcRenderer.invoke("assistant:restore-session"),
   togglePanel: () => ipcRenderer.invoke("panel:toggle"),
   setAvatar: (avatar) => ipcRenderer.invoke("assistant:set-avatar", avatar),
   chooseAvatar: () => ipcRenderer.invoke("assistant:choose-avatar"),
