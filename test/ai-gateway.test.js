@@ -56,6 +56,10 @@ test("catalog is dynamic; analysis uses its configured model and only explicit t
   assert.equal(result.text, "已分析");
   assert.equal(result.model, "test/served");
   assert.equal(JSON.stringify(audit).includes("分析这条测试需求"), false);
+  const chosen = await service.ask({ text: "分析选中的缺陷", stage: "analysis" }, "group/custom");
+  assert.equal(request.model, "group/custom");
+  assert.equal(chosen.requestedModel, "group/custom");
+  assert.equal(store.get().analysisModel, "test/analysis");
 });
 
 test("tool probe validates arguments and completes a read-only two-round exchange", async context => {

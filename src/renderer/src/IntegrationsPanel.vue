@@ -4,7 +4,7 @@ import type { ConnectionConfig, ConnectionDraft, TaskPreview } from "../../share
 
 const connections = ref<ConnectionConfig[]>([])
 function emptyDraft(): ConnectionDraft {
-  return { id: "", name: "", kind: "jira-server", baseUrl: "", allowHttp: false, auth: "browser", username: "", headerName: "X-API-Key", secret: "", endpoint: "/api/tasks", query: "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC", mappings: { records: "data.items", id: "id", title: "title", status: "status", assignee: "assignee", priority: "priority", url: "url" } }
+  return { id: "", name: "", kind: "jira-server", bugType: "Bug", baseUrl: "", allowHttp: false, auth: "browser", username: "", headerName: "X-API-Key", secret: "", endpoint: "/api/tasks", query: "", mappings: { records: "data.items", id: "id", title: "title", status: "status", assignee: "assignee", priority: "priority", url: "url" } }
 }
 const draft = ref<ConnectionDraft>(emptyDraft())
 const baseline = ref(JSON.stringify(draft.value))
@@ -14,6 +14,8 @@ const message = ref("")
 const failed = ref(false)
 const preview = ref<TaskPreview | null>(null)
 const needsSecret = computed(() => !["none", "browser"].includes(draft.value.auth))
+const jira = computed(() => draft.value.kind === "jira-server" || draft.value.kind === "jira-cloud")
+const itemLabel = computed(() => jira.value ? "缺陷" : "任务")
 const mappingLabels: Record<string, string> = { records: "任务数组路径（留空表示根数组）", id: "任务编号", title: "标题", status: "状态", assignee: "负责人", priority: "优先级", url: "原始链接" }
 
 function select(connection?: ConnectionConfig): void {
@@ -46,7 +48,7 @@ async function save(): Promise<void> {
     const saved = await window.desk.saveConnection(JSON.parse(JSON.stringify(draft.value)))
     connections.value = await window.desk.listConnections()
     select(saved)
-    message.value = "配置已保存。接下来可以登录、测试连接或预览任务。"
+    message.value = "配置已保存。接下来可以登录、测试连接或预览" + itemLabel.value + "。"
   })
 }
 
@@ -55,7 +57,7 @@ async function inspect(onlyTest: boolean): Promise<void> {
     preview.value = null
     const result = await window.desk.previewConnection(draft.value.id)
     if (!onlyTest) preview.value = result
-    message.value = onlyTest ? "连接成功，任务列表结构校验通过。本页返回 " + result.items.length + " 条。" : "已读取本页 " + result.items.length + " 条。" + (result.hasMore ? "还有更多任务，当前为前 50 条预览，并非全量统计。" : "")
+    message.value = onlyTest ? "连接成功，本页返回 " + result.items.length + " 条" + itemLabel.value + "。" : "已读取本页 " + result.items.length + " 条。" + (result.hasMore ? "源系统还有更多记录。" : "")
   })
 }
 
@@ -104,7 +106,10 @@ async function remove(): Promise<void> {
         </div>
         <label v-if="needsSecret">认证凭证<input v-model="draft.secret" type="password" autocomplete="new-password" :placeholder="draft.secretConfigured ? '已保存，留空保留；修改地址或认证方式需重填' : '仅在此输入，使用系统安全存储加密保存'" /></label>
         <p v-if="draft.auth === 'browser'" class="hint">浏览器登录只适用于 Cookie 认证。使用请求头 Token 的系统请选择 Bearer Token 或自定义认证头。</p>
-        <label v-if="draft.kind === 'jira-server' || draft.kind === 'jira-cloud'">任务筛选（JQL）<textarea v-model="draft.query" rows="3" placeholder="例如：project = DEMO AND issuetype = Bug AND resolution = Unresolved" /></label>
+        <template v-if="jira">
+          <label>Jira 缺陷类型<input v-model.trim="draft.bugType" maxlength="100" placeholder="Bug，也可填写 Jira 中的自定义类型名称或 ID" /></label>
+          <label>缺陷筛选（JQL）<textarea v-model="draft.query" rows="3" placeholder="留空时查分配给我且未解决的缺陷。可填 project = DEMO AND assignee = currentUser() AND resolution = Unresolved" /></label>
+        </template>
         <p v-else-if="draft.kind === 'qianfan'" class="hint">千帆默认读取你当前登录账号名下的未完成任务。</p>
         <template v-else>
           <label>读取任务的 GET 接口路径<input v-model="draft.endpoint" required placeholder="/api/tasks?status=open" /></label>
@@ -125,18 +130,19 @@ async function remove(): Promise<void> {
     <div v-if="draft.id" class="actions">
       <button v-if="draft.auth === 'browser'" type="button" :disabled="busy || dirty" @click="login">打开登录窗口</button>
       <button type="button" :disabled="busy || dirty" @click="inspect(true)">测试连接</button>
-      <button type="button" :disabled="busy || dirty" @click="inspect(false)">预览任务</button>
+      <button type="button" :disabled="busy || dirty" @click="inspect(false)">预览{{ itemLabel }}</button>
     </div>
     <p v-if="dirty" class="dirty-tip">配置有修改，请先保存后再测试。</p>
     <p v-if="busy" class="hint" role="status">正在处理，请稍候…</p>
     <p v-if="message" class="result" :class="{ failed }" role="status">{{ message }}</p>
     <div v-if="preview" class="preview settings-card">
-      <h3>任务预览 <span v-if="preview.total !== null">源系统共 {{ preview.total }} 条</span></h3>
-      <p v-if="!preview.items.length" class="hint">当前查询没有任务。可以调整筛选条件后重试。</p>
+      <h3>{{ itemLabel }}预览 <span v-if="preview.total !== null">源系统共 {{ preview.total }} 条</span></h3>
+      <p v-if="!preview.items.length" class="hint">当前查询没有{{ itemLabel }}。可以调整筛选条件后重试。</p>
       <ol>
         <li v-for="item in preview.items" :key="item.id">
           <strong>{{ item.id }} · {{ item.title }}</strong>
-          <p>{{ [item.status, item.assignee, item.priority].filter(Boolean).join(' · ') || '无附加信息' }}</p>
+          <p v-if="jira">提出人 {{ item.reporter || '未知' }} · 提出时间 {{ item.created ? new Date(item.created).toLocaleString('zh-CN') : '未知' }}</p>
+          <p v-else>{{ [item.status, item.assignee, item.priority].filter(Boolean).join(' · ') || '无附加信息' }}</p>
         </li>
       </ol>
     </div>

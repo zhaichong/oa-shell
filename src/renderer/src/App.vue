@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref } from "vue"
-import type { AttendanceDetail, AttendanceState, DeskState } from "../../shared/desk"
+import type { AttendanceDetail, AttendanceState, DeskState, JiraBugList } from "../../shared/desk"
 import { dateParts, monthLabel, splitDetail } from "./attendance-view.mjs"
 import { parseMarkdownBlocks } from "./markdown"
 import FaceMark from "./FaceMark.vue"
+import JiraBugListCard from "./JiraBugListCard.vue"
 const IntegrationsPanel = defineAsyncComponent(() => import("./IntegrationsPanel.vue"))
 const AISettings = defineAsyncComponent(() => import("./AISettings.vue"))
 
@@ -24,6 +25,7 @@ type Turn = {
   text: string
   model?: string
   card?: DetailCard | null
+  bugLists?: JiraBugList[]
 }
 
 declare global {
@@ -59,7 +61,7 @@ const prompts = [
   { label: "本月加班", command: "/加班" },
   { label: "刷新出勤", command: "/刷新" },
   { label: "打开消息", command: "/打开 工作消息" },
-  { label: "工作任务", command: "/任务" }
+  { label: "我的缺陷", command: "/缺陷" }
 ]
 let stopListening: (() => void) | null = null
 
@@ -219,6 +221,7 @@ function resolveCommand(raw: string): string {
     return text
   }
   const compact = text.replace(/\s/g, "")
+  if (/^(?:查看|看看|查询)?(?:我的)?(?:缺陷|bugs?)(?:列表)?$/i.test(compact)) return "/缺陷"
   if (/^(?:查看|看看|查询)?(?:我的)?任务(?:列表)?$/.test(compact)) return "/任务"
   if (/^(?:请)?(?:帮我)?(?:看看|查看|查一下)?(?:本月)?加班(?:情况|明细)?$/.test(compact)) {
     return "/加班"
@@ -280,9 +283,9 @@ function receiveState(next: DeskState): void {
   }
 }
 
-function pushTurn(role: "user" | "assistant", value: string, card?: DetailCard | null, model?: string): void {
+function pushTurn(role: "user" | "assistant", value: string, card?: DetailCard | null, model?: string, bugLists?: JiraBugList[]): void {
   turnId += 1
-  turns.value = [...turns.value, { id: turnId, role, text: value, card: card || null, model }]
+  turns.value = [...turns.value, { id: turnId, role, text: value, card: card || null, model, bugLists }]
 }
 
 async function scrollThread(): Promise<void> {
@@ -321,7 +324,7 @@ async function runCommand(preset?: string): Promise<void> {
       state.value = await window.desk.getState()
     }
     const card = wantsCard ? buildCard(state.value?.attendance) : null
-      pushTurn("assistant", card && state.value ? cardSummary(state.value.attendance, card) : result.message, card)
+    pushTurn("assistant", card && state.value ? cardSummary(state.value.attendance, card) : result.message, card, undefined, result.bugLists)
   } catch (error) {
     pushTurn("assistant", (error instanceof Error ? error.message : "请求失败，请重试").replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ""))
   } finally {
@@ -441,6 +444,12 @@ async function runCommand(preset?: string): Promise<void> {
               </p>
             </template>
           </div>
+          <JiraBugListCard
+            v-for="list in turn.bugLists"
+            :key="list.connectionId"
+            :list="list"
+            @update="Object.assign(list, $event)"
+          />
           <div v-if="turn.card" class="record" aria-label="加班明细">
             <div class="record-head">
               <span>{{ turn.card.month }}</span>

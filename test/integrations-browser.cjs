@@ -53,6 +53,47 @@ app.whenReady().then(async () => {
   assert.equal(browserResult.items.length, 1);
   ipcMain.handle("state:get", () => ({ panelOpen: true, attendance: { state: "ready", details: [] } }));
   ipcMain.handle("assistant:restore-session", () => null);
+  const bug = { id: "DEMO-42", title: "页面加载失败", reporter: "测试成员", created: "2026-11-19T09:12:00+08:00", status: "待处理" };
+  const list = { connectionId: "jira-fixture", name: "Jira 测试", items: [bug], total: 2, next: { offset: 1 } };
+  ipcMain.handle("assistant:command", (_event, command) => {
+    assert.equal(command, "/缺陷");
+    return { ok: true, message: "我的 Jira 缺陷", bugLists: [list] };
+  });
+  const searches = [];
+  const handoffs = [];
+  const discoveries = [];
+  const fixtureCommit = "a".repeat(40);
+  ipcMain.handle("jira:ai-options", () => ({
+    gateway: baseUrl,
+    models: [{ id: "fixture/first", name: "分析一" }, { id: "fixture/second", name: "分析二" }]
+  }));
+  ipcMain.handle("jira:choose-repository", () => "fixture-repository");
+  ipcMain.handle("jira:analyze", (_event, input) => {
+    handoffs.push(input);
+    return { model: input.model, requestedModel: input.model, text: "建议先检查加载条件" };
+  });
+  ipcMain.handle("jira:find-code", (_event, input) => {
+    discoveries.push(input);
+    assert.equal(handoffs.length, 0);
+    return { commit: fixtureCommit, candidates: [
+      { path: "src/Checkout.vue", reason: "工单提到文件路径", selected: true },
+      { path: "src/Other.vue", reason: "匹配文件名或组件名", selected: true }
+    ] };
+  });
+  ipcMain.handle("jira:bugs-page", (_event, { id, cursor, filter }) => {
+    assert.equal(id, list.connectionId);
+    if (filter) {
+      searches.push({ cursor, filter });
+      return { ...list, filter, items: cursor.offset ? [{ ...bug, id: "DEMO-43" }] : [bug], next: cursor.offset ? null : list.next };
+    }
+    assert.equal(cursor.offset, 1);
+    return { ...list, items: [{ ...bug, id: "DEMO-43" }], next: null };
+  });
+  ipcMain.handle("jira:bug-detail", (_event, { id, key }) => {
+    assert.equal(id, list.connectionId);
+    assert.equal(key, bug.id);
+    return { ...list, items: [{ ...bug, description: "刷新页面后复现" }], next: null };
+  });
   ipcMain.handle("connections:list", () => store.list());
   ipcMain.handle("connections:save", (_event, input) => store.save(input));
   ipcMain.handle("connections:preview", async (_event, id) => {
@@ -128,6 +169,68 @@ app.whenReady().then(async () => {
   assert.equal(aiResult, true);
   assert.equal(aiStore.get().defaultModel, "fixture/grok");
   assert.equal(aiService.isRunning(), false);
+  const bugResult = await window.webContents.executeJavaScript(`(async () => {
+    const click = label => [...document.querySelectorAll('button')].find(el => el.textContent.trim() === label).click();
+    async function waitFor(selector) {
+      for (let count = 0; count < 80; count++) {
+        const node = document.querySelector(selector);
+        if (node) return node;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error('Missing Jira UI: ' + selector);
+    }
+    click('返回对话');
+    await waitFor('.prompts button');
+    click('我的缺陷');
+    const card = await waitFor('.bug-list');
+    click('交给 AI');
+    const handoff = await waitFor('.handoff select:not(:disabled)');
+    handoff.value = 'fixture/second';
+    handoff.dispatchEvent(new Event('change', { bubbles: true }));
+    click('选择本地仓库');
+    await waitFor('.candidate input:checked');
+    const advanced = await waitFor('.handoff details:not([open])');
+    advanced.querySelector('summary').click();
+    const manual = advanced.querySelector('textarea');
+    manual.value = 'src/app.js';
+    manual.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelectorAll('.candidate input')[1].click();
+    click('确认并分析');
+    await waitFor('.handoff .answer');
+    click('收起');
+    (await waitFor('.bug-list > .bug-more')).click();
+    await waitFor('.bug-list li:nth-child(2)');
+    (await waitFor('.bug-title')).click();
+    await waitFor('.bug-description');
+    const original = card.textContent;
+    const form = await waitFor('.bug-search');
+    const input = form.querySelector('input[type=search]');
+    input.value = '页面';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    form.requestSubmit();
+    await waitFor('.bug-list:not(:has(.bug-search-note)) li:only-child');
+    (await waitFor('.bug-list > .bug-more:not(:disabled)')).click();
+    await waitFor('.bug-list li:nth-child(2)');
+    const mode = form.querySelector('select');
+    mode.value = 'key';
+    mode.dispatchEvent(new Event('change', { bubbles: true }));
+    input.value = 'demo-42';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    form.querySelector('input[type=checkbox]').click();
+    await waitFor('.bug-list li:only-child');
+    return original;
+  })()`);
+  for (const value of ["DEMO-42", "DEMO-43", "页面加载失败", "测试成员", "提出时间", "刷新页面后复现"]) {
+    assert.ok(bugResult.includes(value), value);
+  }
+  assert.deepEqual(searches, [
+    { cursor: { offset: 0 }, filter: { mine: true, by: "title", value: "页面" } },
+    { cursor: { offset: 1 }, filter: { mine: true, by: "title", value: "页面" } },
+    { cursor: { offset: 0 }, filter: { mine: false, by: "key", value: "demo-42" } }
+  ]);
+  assert.deepEqual(discoveries, [{ id: "jira-fixture", key: "DEMO-42", repository: "fixture-repository", branch: "HEAD" }]);
+  assert.deepEqual(handoffs, [{ id: "jira-fixture", key: "DEMO-42", model: "fixture/second", gateway: baseUrl,
+    repository: "fixture-repository", branch: "HEAD", commit: fixtureCommit, files: ["src/Checkout.vue", "src/app.js"] }]);
   console.log("Integration UI regression passed: save, encrypted credentials, GET preview, narrow layout");
   window.destroy();
   server.close();

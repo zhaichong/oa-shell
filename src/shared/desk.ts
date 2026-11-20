@@ -19,6 +19,21 @@ export interface AttendanceState {
 export interface AssistantReply {
   ok: boolean
   message: string
+  bugLists?: JiraBugList[]
+}
+
+export interface JiraBugCursor { offset: number; token?: string }
+export interface JiraBugFilter { mine: boolean; by: "title" | "key"; value: string }
+
+export interface JiraBugList {
+  connectionId: string
+  name: string
+  items: Array<{ id: string; title: string; reporter: string; created: string; status: string; description?: string }>
+  total: number | null
+  next: JiraBugCursor | null
+  filter?: JiraBugFilter
+  detailOnly?: boolean
+  error?: string
 }
 
 export interface DeskState {
@@ -39,6 +54,14 @@ export interface DeskApi {
   setAvatar: (avatar: string) => Promise<DeskState>
   chooseAvatar: () => Promise<DeskState | null>
   runCommand: (input: string) => Promise<AssistantReply>
+  listJiraBugs: (id: string, cursor: JiraBugCursor, filter?: JiraBugFilter) => Promise<JiraBugList>
+  getJiraBug: (id: string, key: string) => Promise<JiraBugList>
+  openJiraBug: (id: string, key: string) => Promise<void>
+  getJiraAIOptions: () => Promise<{ models: AIModel[]; gateway: string }>
+  chooseJiraRepository: () => Promise<string | null>
+  findJiraCode: (input: { id: string; key: string; repository: string; branch: string }) => Promise<JiraCodeDiscovery>
+  analyzeJiraBug: (input: { id: string; key: string; model: string; gateway: string; repository: string; branch: string; commit?: string; files: string[] }) => Promise<AIReply>
+  copyJiraHandoff: (input: { id: string; key: string; repository: string; branch: string }) => Promise<void>
   listConnections: () => Promise<ConnectionConfig[]>
   saveConnection: (input: ConnectionDraft) => Promise<ConnectionConfig>
   removeConnection: (id: string) => Promise<boolean>
@@ -77,11 +100,16 @@ export interface AIConfig {
 }
 
 export interface AIModel { id: string; name: string; provider: string }
+export interface JiraCodeDiscovery {
+  commit: string
+  candidates: Array<{ path: string; reason: string; selected: boolean }>
+}
 export interface AIReply { text: string; model: string; requestedModel: string; requestId: string; inputTokens: number | null; outputTokens: number | null }
 export interface AIRecord { id: string; at: string; stage: string; requestedModel: string; model: string; status: string; durationMs: number; inputTokens: number | null; outputTokens: number | null }
 export interface AISandboxResult { id: string; workspace: string; requestedModel: string; ok: boolean; message: string; durationMs: number }
 
 export interface ConnectionConfig {
+  bugType?: string
   id: string
   name: string
   kind: "jira-cloud" | "jira-server" | "qianfan" | "json"
@@ -99,7 +127,7 @@ export interface ConnectionConfig {
 export type ConnectionDraft = ConnectionConfig & { secret?: string; clearSecret?: boolean }
 
 export interface TaskPreview {
-  items: Array<{ id: string; title: string; status: string; assignee: string; priority: string; url: string }>
+  items: Array<{ id: string; title: string; status: string; assignee: string; priority: string; url: string; reporter?: string; created?: string }>
   total: number | null
   hasMore: boolean
 }

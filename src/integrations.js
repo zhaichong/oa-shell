@@ -57,7 +57,8 @@ function normalizeConnection(input) {
     id: field(input.id, 60), name, kind: input.kind, baseUrl: base.href.replace(/\/$/, ""),
     allowHttp: input.allowHttp === true, auth: input.auth,
     username: field(input.username, 200), headerName, endpoint,
-    query: field(input.query, 4000), mappings
+    query: field(input.query, 4000), mappings,
+    ...(isJira(input) ? { bugType: field(input.bugType, 100) || "Bug" } : {})
   };
 }
 
@@ -131,6 +132,10 @@ function createIntegrationStore(filePath, crypto) {
 
 function atPath(value, key) {
   return key ? key.split(".").reduce((current, segment) => current && Object.prototype.hasOwnProperty.call(current, segment) ? current[segment] : undefined, value) : value;
+}
+
+function isJira(connection) {
+  return connection.kind === "jira-cloud" || connection.kind === "jira-server";
 }
 
 function jiraUrl(baseUrl, apiPath, query) {
@@ -246,7 +251,7 @@ function candidateUrls(config, primaryUrl) {
   return [primaryUrl];
 }
 
-async function previewTasks(config, secret, fetcher = fetch, extraAuth = {}) {
+async function previewTasks(config, secret, fetcher = fetch, extraAuth = {}, bugPage) {
   const request = buildRequest(config, secret, extraAuth);
   const candidates = candidateUrls(config, request.url);
   const controller = new AbortController();
@@ -258,7 +263,17 @@ async function previewTasks(config, secret, fetcher = fetch, extraAuth = {}) {
     let response = null;
     let activeUrl = candidates[0];
     for (let index = 0; index < candidates.length; index += 1) {
-      activeUrl = candidates[index];
+      const url = new URL(candidates[index]);
+      if (bugPage && isJira(config)) {
+        url.searchParams.set("maxResults", "20");
+        url.searchParams.set("fields", "summary,status,reporter,created" + (bugPage.key ? ",description" : ""));
+        if (url.pathname.endsWith("/search/jql")) {
+          if (bugPage.token) url.searchParams.set("nextPageToken", bugPage.token);
+        } else if (bugPage.offset) {
+          url.searchParams.set("startAt", String(bugPage.offset));
+        }
+      }
+      activeUrl = url.href;
       response = await fetcher(activeUrl, { method: "GET", headers: request.headers, redirect: "manual", credentials: config.auth === "browser" ? "include" : "omit", signal: controller.signal });
       if (response.status !== 404 || index === candidates.length - 1) break;
     }
@@ -293,7 +308,7 @@ async function previewTasks(config, secret, fetcher = fetch, extraAuth = {}) {
     let payload;
     try { payload = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("接口未返回 JSON，可能是登录页面或地址配置不正确"); }
     const records = config.kind === "json" ? atPath(payload, config.mappings.records) : payload.issues;
-    if (!Array.isArray(records)) throw new Error("找不到任务数组，请检查接口及列表字段映射");
+    if (!Array.isArray(records)) throw new Error(bugPage ? "Jira 响应缺少缺陷列表，请检查接口或登录状态" : "找不到任务数组，请检查接口及列表字段映射");
     const items = records.slice(0, 50).map((record, index) => {
       const jira = config.kind === "jira-cloud" || config.kind === "jira-server";
       const text = (key, jiraPath, fallback = "") => {
@@ -302,16 +317,27 @@ async function previewTasks(config, secret, fetcher = fetch, extraAuth = {}) {
       };
       const id = text("id", "key", String(index + 1));
       const title = text("title", "fields.summary");
-      if (!title) throw new Error("部分任务没有标题，请检查标题字段映射");
+      if (!title) throw new Error(bugPage ? "Jira 缺陷缺少标题" : "部分任务没有标题，请检查标题字段映射");
       let url = "";
       try {
         const link = jira ? config.baseUrl + "/browse/" + encodeURIComponent(id) : text("url", "");
         const target = new URL(link || "about:blank", config.baseUrl);
         if (target.origin === new URL(config.baseUrl).origin && ["http:", "https:"].includes(target.protocol) && !target.username && !target.password) url = target.href;
       } catch {}
-      return { id, title, status: text("status", "fields.status.name"), assignee: text("assignee", "fields.assignee.displayName"), priority: text("priority", "fields.priority.name"), url };
+      return { id, title, status: text("status", "fields.status.name"), assignee: text("assignee", "fields.assignee.displayName"), priority: text("priority", "fields.priority.name"), url,
+        ...(bugPage ? {
+          reporter: text("reporter", "fields.reporter.displayName") || text("reporter", "fields.reporter.name"),
+          created: text("created", "fields.created"),
+          ...(bugPage.key ? { description: readDescription(record.fields?.description) } : {})
+        } : {}) };
     });
     const total = Number.isSafeInteger(payload.total) && payload.total >= items.length ? payload.total : null;
+    if (bugPage) {
+      const offset = (bugPage.offset || 0) + records.length;
+      const token = field(payload.nextPageToken, 4000);
+      const next = token ? { offset, token } : !activeUrl.includes("/search/jql") && total !== null && offset < total ? { offset } : null;
+      return { items, total, hasMore: Boolean(next), next };
+    }
     return { items, total, hasMore: records.length > 50 || Boolean(payload.nextPageToken) || payload.isLast === false || (total !== null && total > items.length) };
   } catch (error) {
     if (controller.signal.aborted) throw new Error("连接超时，请检查网络或 VPN 后重试");
@@ -322,4 +348,42 @@ async function previewTasks(config, secret, fetcher = fetch, extraAuth = {}) {
   }
 }
 
-module.exports = { normalizeConnection, createIntegrationStore, buildRequest, previewTasks };
+function readDescription(value, depth = 0) {
+  if (typeof value === "string") return field(value, 6000);
+  if (!value || typeof value !== "object" || depth > 15) return "";
+  if (typeof value.text === "string") return value.text.slice(0, 6000);
+  if (value.type === "hardBreak") return "\n";
+  return Array.isArray(value.content)
+    ? value.content.slice(0, 100).map(item => readDescription(item, depth + 1))
+      .join(["paragraph", "heading"].includes(value.type) ? "" : "\n").slice(0, 6000)
+    : "";
+}
+
+function previewJiraBugs(config, secret, fetcher, page = {}) {
+  if (!isJira(config)) throw new Error("请选择 Jira 缺陷连接");
+  const key = field(page.key, 80).toUpperCase();
+  if (page.key && !/^[A-Z][A-Z0-9_]*-\d+$/.test(key)) throw new Error("请输入有效的 Bug 号");
+  const type = '"' + (config.bugType || "Bug").replace(/["\\]/g, "\\$&") + '"';
+  const savedFilter = (config.query || "").replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\border\s+by\b[\s\S]*$/gi, match => /^order\s/i.test(match) ? "" : match).trim();
+  let filter = key ? 'key = "' + key + '"' : savedFilter || "assignee = currentUser() AND resolution = Unresolved";
+  if (!key && page.filter) {
+    const { mine, by, value } = page.filter;
+    if (typeof mine !== "boolean" || !["title", "key"].includes(by) || typeof value !== "string" || value.length > 160) {
+      throw new Error("缺陷筛选条件无效");
+    }
+    const search = value.trim();
+    const clauses = mine ? ["assignee = currentUser()"] : [];
+    if (search && by === "key") {
+      if (!/^[A-Z][A-Z0-9_]*-\d+$/i.test(search)) throw new Error("请输入完整 Bug 号，例如 ABC-123。");
+      clauses.push('key = "' + search.toUpperCase() + '"');
+    } else if (search) {
+      const phrase = '"' + search.replace(/["\\]/g, "\\$&") + '"';
+      clauses.push('summary ~ "' + phrase.replace(/["\\]/g, "\\$&") + '"');
+    }
+    filter = clauses.join(" AND ");
+  }
+  const query = "issuetype = " + type + (filter ? " AND (" + filter + ")" : "") + " ORDER BY created DESC, key DESC";
+  return previewTasks({ ...config, query }, secret, fetcher, {}, { ...page, key });
+}
+
+module.exports = { normalizeConnection, createIntegrationStore, buildRequest, isJira, previewTasks, previewJiraBugs };

@@ -3,7 +3,65 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { normalizeConnection, createIntegrationStore, buildRequest, previewTasks } = require("../src/integrations");
+const { normalizeConnection, createIntegrationStore, buildRequest, previewTasks, previewJiraBugs } = require("../src/integrations");
+
+test("queries Jira defects with an enforced type, reporter, creation date and pagination", async () => {
+  const config = normalizeConnection({ name: "Jira", kind: "jira-server", baseUrl: "https://example.test/jira/login.jsp",
+    auth: "none", bugType: "缺陷", query: 'project = DEMO AND summary ~ "order by" ORDER BY updated ASC' });
+  const requests = [];
+  const fetcher = async (url, options) => {
+    requests.push(new URL(url));
+    assert.equal(options.method, "GET");
+    return Response.json({ total: 2, issues: [{ key: "DEMO-7", fields: {
+      summary: "登录页提示异常", reporter: { displayName: "测试用户" },
+      created: "2026-11-19T09:12:00.000+0800", description: {
+        type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "复现步骤" }] }]
+      }
+    } }] });
+  };
+  const page = await previewJiraBugs(config, "", fetcher);
+  assert.equal(requests[0].pathname, "/jira/rest/api/2/search");
+  assert.equal(requests[0].searchParams.get("jql"), 'issuetype = "缺陷" AND (project = DEMO AND summary ~ "order by") ORDER BY created DESC, key DESC');
+  assert.equal(requests[0].searchParams.get("fields"), "summary,status,reporter,created");
+  assert.equal(page.items[0].reporter, "测试用户");
+  assert.equal(page.items[0].created, "2026-11-19T09:12:00.000+0800");
+  assert.deepEqual(page.next, { offset: 1 });
+  await previewJiraBugs(config, "", fetcher, page.next);
+  assert.equal(requests[1].searchParams.get("startAt"), "1");
+  const detail = await previewJiraBugs(config, "", fetcher, { key: "demo-7" });
+  assert.ok(requests[2].searchParams.get("jql").includes('key = "DEMO-7"'));
+  assert.equal(detail.items[0].description, "复现步骤");
+  assert.throws(() => previewJiraBugs(config, "", fetcher, { key: 'DEMO-7" OR' }), /Bug 号/);
+});
+
+test("Jira Cloud advances using its search cursor", async () => {
+  const config = normalizeConnection({ name: "Cloud", kind: "jira-cloud", baseUrl: "https://example.test", auth: "none" });
+  const page = await previewJiraBugs(config, "", async url => {
+    assert.equal(new URL(url).searchParams.get("nextPageToken"), "page-token");
+    return Response.json({ issues: [], isLast: true });
+  }, { offset: 20, token: "page-token" });
+  assert.equal(page.next, null);
+});
+
+test("interactive Jira filters support mine, escaped title text, and exact issue keys", async () => {
+  const config = normalizeConnection({ name: "Jira", kind: "jira-server", baseUrl: "https://example.test", auth: "none",
+    query: "assignee = currentUser() AND resolution = Unresolved" });
+  const queries = [];
+  const fetcher = async url => {
+    const request = new URL(url);
+    queries.push(request.searchParams.get("jql"));
+    return Response.json({ total: 0, issues: [] });
+  };
+  await previewJiraBugs(config, "", fetcher, { filter: { mine: true, by: "title", value: "加载失败" } });
+  assert.match(queries[0], /assignee = currentUser\(\).*summary ~/);
+  await previewJiraBugs(config, "", fetcher, { filter: { mine: false, by: "key", value: " demo-42 " } });
+  assert.equal(queries[1], 'issuetype = "Bug" AND (key = "DEMO-42") ORDER BY created DESC, key DESC');
+  await previewJiraBugs(config, "", fetcher, { filter: { mine: false, by: "title", value: 'x" OR project = SECRET' } });
+  assert.ok(queries[2].includes('summary ~ '));
+  assert.ok(queries[2].includes('\\"'));
+  assert.doesNotMatch(queries[2], /currentUser/);
+  assert.throws(() => previewJiraBugs(config, "", fetcher, { filter: { mine: false, by: "key", value: "42" } }), /Bug 号/);
+});
 
 function config(patch = {}) {
   return { name: "Test Jira", kind: "jira-server", baseUrl: "https://jira.example.test/team", auth: "bearer", mappings: {}, ...patch };

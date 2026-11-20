@@ -224,10 +224,11 @@ function createAIService(store, fetcher = fetch, audit = entry => {}) {
       }
       throw last;
     },
-    async ask(input) {
+    async ask(input, modelOverride = "", expectedGateway = "") {
       if (!input || typeof input.text !== "string" || !input.text.trim() || input.text.length > 16000) throw new Error("请输入不超过 16000 字的内容");
       return execute(input.stage || "analysis", async (config, apiKey, run) => {
-        const model = selectModel(config, run.stage);
+        if (expectedGateway && config.baseUrl !== expectedGateway) throw new Error("AI 网关已变更，请重新选择");
+        const model = modelOverride || selectModel(config, run.stage);
         const body = bodyFor(config, model, input.text.trim());
         const extraContext = typeof input.context === "string" && input.context.trim() ? input.context.trim().slice(0, 12000) : "";
         const history = Array.isArray(input.history)
