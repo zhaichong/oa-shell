@@ -300,3 +300,91 @@ test("get-all-support-js-api immediately emits get-all-support-js-api.result to 
   const apis = JSON.parse(received[0].res);
   assert.ok(apis.includes("independentPhotoView"));
 });
+
+function loadBridgeWithRecordingIpc() {
+  const target = new EventTarget();
+  const invoked = [];
+  const synced = [];
+  const window = {
+    location: { pathname: "/sp/em/main", href: "https://oa.yarward.com/sp/em/main" },
+    addEventListener: target.addEventListener.bind(target),
+    removeEventListener: target.removeEventListener.bind(target),
+    dispatchEvent: target.dispatchEvent.bind(target)
+  };
+  const messagePopup = require("../src/message-popup");
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/oa-bridge"), "utf8"), {
+    window,
+    Date,
+    setInterval() {},
+    setTimeout(fn) { return 0; },
+    clearTimeout() {},
+    require(name) {
+      if (name === "./message-popup") return messagePopup;
+      return {
+        ipcRenderer: {
+          on() {},
+          send() {},
+          sendSync(channel, value) {
+            synced.push({ channel, value });
+            if (channel === "oa:get-path") return value === "downloads" ? "C:/Users/test/Downloads" : "";
+            if (channel === "oa:dialog-save-sync") return { canceled: false, filePath: "C:/Users/test/Downloads/a.docx" };
+            if (channel === "oa:dialog-open-sync") return ["C:/Users/test/a.docx"];
+            if (channel === "oa:dialog-message-sync") return 1;
+            return null;
+          },
+          invoke(channel, value) {
+            invoked.push({ channel, value });
+            if (channel === "oa:dialog-save") return Promise.resolve({ canceled: false, filePath: "C:/Users/test/Downloads/a.docx" });
+            if (channel === "oa:dialog-open") return Promise.resolve({ canceled: false, filePaths: ["C:/Users/test/a.docx"] });
+            if (channel === "oa:dialog-message") return Promise.resolve({ response: 1, checkboxChecked: false });
+            if (channel === "oa:shell-open-path") return Promise.resolve("");
+            if (channel === "oa:shell-show-item") return Promise.resolve(true);
+            if (channel === "oa:shell-open-external") return Promise.resolve(true);
+            return Promise.resolve(null);
+          }
+        }
+      };
+    }
+  });
+  return { window, invoked, synced };
+}
+
+test("desktop file dialogs forward to the main process instead of silently failing", async () => {
+  const { window, invoked, synced } = loadBridgeWithRecordingIpc();
+  const remote = window.emRequire("@electron/remote");
+
+  const saved = await remote.dialog.showSaveDialog({ defaultPath: "a.docx" });
+  assert.deepEqual(saved, { canceled: false, filePath: "C:/Users/test/Downloads/a.docx" });
+  assert.equal(invoked.at(-1).channel, "oa:dialog-save");
+  assert.equal(JSON.stringify(invoked.at(-1).value), JSON.stringify({ defaultPath: "a.docx" }));
+
+  assert.deepEqual(remote.dialog.showSaveDialogSync({}), { canceled: false, filePath: "C:/Users/test/Downloads/a.docx" });
+  assert.equal(synced.at(-1).channel, "oa:dialog-save-sync");
+  assert.equal(JSON.stringify(synced.at(-1).value), "{}");
+
+  const opened = await remote.dialog.showOpenDialog({});
+  assert.deepEqual(opened, { canceled: false, filePaths: ["C:/Users/test/a.docx"] });
+
+  assert.deepEqual(remote.dialog.showOpenDialogSync({}), ["C:/Users/test/a.docx"]);
+  assert.deepEqual(await remote.dialog.showMessageBox({ message: "确定吗" }), { response: 1, checkboxChecked: false });
+  assert.equal(remote.dialog.showMessageBoxSync({}), 1);
+
+  // Unserializable dialog options (functions, circular refs) never throw.
+  assert.deepEqual(await remote.dialog.showSaveDialog({ onPick: () => {} }), { canceled: false, filePath: "C:/Users/test/Downloads/a.docx" });
+  assert.equal(JSON.stringify(invoked.at(-1).value), "{}");
+});
+
+test("shell and app paths forward to the main process", async () => {
+  const { window, invoked, synced } = loadBridgeWithRecordingIpc();
+  const remote = window.emRequire("@electron/remote");
+
+  assert.equal(await remote.shell.openPath("C:/Users/test/Downloads/a.docx"), "");
+  assert.equal(invoked.at(-1).channel, "oa:shell-open-path");
+  assert.equal(invoked.at(-1).value, "C:/Users/test/Downloads/a.docx");
+  assert.equal(await remote.shell.showItemInFolder("C:/Users/test/Downloads/a.docx"), true);
+  assert.equal(await remote.shell.openExternal("https://example.test/a.docx"), true);
+  assert.equal(remote.app.getPath("downloads"), "C:/Users/test/Downloads");
+  assert.equal(remote.app.getPath("nonsense"), "");
+  assert.equal(synced.at(-1).channel, "oa:get-path");
+  assert.equal(synced.at(-1).value, "nonsense");
+});

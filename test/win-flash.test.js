@@ -29,7 +29,7 @@ test("a timed out helper response cannot satisfy the next command", async () => 
   flash.close();
 });
 
-test("windows helper reports a numeric foreground window", { timeout: 8000 }, async () => {
+test("windows helper reports a numeric foreground window", { timeout: 8000, skip: process.platform !== "win32" }, async () => {
   const flash = createWinFlash(path.join(__dirname, "../resources/win-flash.ps1"));
   try {
     const value = await flash.foreground();
