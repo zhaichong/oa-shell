@@ -504,26 +504,66 @@ function installClientBridge() {
       if (channel === "write-clipboard-text") {
         return writeClipboardText(payload && typeof payload === "object" ? payload.text : payload);
       }
+      if (typeof channel === "string" && (channel.indexOf("oa:dialog-") === 0 || channel.indexOf("oa:shell-") === 0)) {
+        return ipcRenderer.invoke(channel, payload);
+      }
       return Promise.resolve(null);
     },
-    sendSync: function () { return null; },
+    sendSync: function (channel, payload) {
+      if (typeof channel === "string" && (channel.indexOf("oa:dialog-") === 0 || channel === "oa:get-path")) {
+        return ipcRenderer.sendSync(channel, payload);
+      }
+      return null;
+    },
     postMessage: noop,
     sendToHost: noop
   };
   const appStub = {
     getVersion: function () { return "10.0.0"; },
     getName: function () { return "OA"; },
-    getPath: function () { return ""; },
+    getPath: function (name) {
+      try {
+        const value = ipc.sendSync("oa:get-path", typeof name === "string" ? name : "");
+        return typeof value === "string" ? value : "";
+      } catch (error) {
+        return "";
+      }
+    },
     relaunch: noop,
     exit: noop,
     quit: noop,
     on: noop,
     once: noop
   };
+  // Only plain JSON data crosses into the main process: functions and
+  // other unserializable values in OA's dialog options are dropped.
+  function dialogOptions(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(JSON.stringify(value));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
   const dialogStub = {
-    showMessageBox: function () { return Promise.resolve({ response: 0 }); },
-    showOpenDialog: function () { return Promise.resolve({ canceled: true, filePaths: [] }); },
-    showOpenDialogSync: function () { return []; }
+    showMessageBox: function (options) { return ipc.invoke("oa:dialog-message", dialogOptions(options)); },
+    showMessageBoxSync: function (options) {
+      const result = ipc.sendSync("oa:dialog-message-sync", dialogOptions(options));
+      return typeof result === "number" ? result : 0;
+    },
+    showOpenDialog: function (options) { return ipc.invoke("oa:dialog-open", dialogOptions(options)); },
+    showOpenDialogSync: function (options) {
+      const result = ipc.sendSync("oa:dialog-open-sync", dialogOptions(options));
+      return Array.isArray(result) ? result : [];
+    },
+    showSaveDialog: function (options) { return ipc.invoke("oa:dialog-save", dialogOptions(options)); },
+    showSaveDialogSync: function (options) {
+      const result = ipc.sendSync("oa:dialog-save-sync", dialogOptions(options));
+      return result && typeof result === "object" ? result : { canceled: true };
+    }
   };
   const isPhotoViewPage = Boolean(
     window.location
@@ -656,9 +696,9 @@ function installClientBridge() {
       readText: function () { return ""; }
     },
     shell: {
-      openExternal: function () { return Promise.resolve(); },
-      openPath: function () { return Promise.resolve(""); },
-      showItemInFolder: noop
+      openExternal: function (url) { return ipc.invoke("oa:shell-open-external", typeof url === "string" ? url : ""); },
+      openPath: function (target) { return ipc.invoke("oa:shell-open-path", typeof target === "string" ? target : ""); },
+      showItemInFolder: function (target) { return ipc.invoke("oa:shell-show-item", typeof target === "string" ? target : ""); }
     }
   };
   const electronStub = {

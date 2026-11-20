@@ -16,7 +16,10 @@ function createStore(filePath) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const temporaryPath = `${filePath}.tmp`;
     fs.writeFileSync(temporaryPath, JSON.stringify(normalized, null, 2), "utf8");
-    fs.rmSync(filePath, { force: true });
+    // Rename directly over the old file: it is atomic on the same volume,
+    // so a crash can never leave the user with no data file at all.
+    // (Deleting first, as before, lost everything if the app died in between.)
+    // integrations.js and ai-gateway.js already save this way on Windows.
     fs.renameSync(temporaryPath, filePath);
     return normalized;
   }
