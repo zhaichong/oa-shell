@@ -1418,6 +1418,94 @@ function registerIpc(): void {
     } catch { return false }
     return false
   })
+  // The OA page talks to Electron through the bridge stubs in oa-bridge.js.
+  // Dialogs, shell and app paths used to be stubs that silently did
+  // nothing (no save dialog at all, open dialog always "cancelled",
+  // getPath always ""), which broke Save / Save As and other desktop
+  // actions. These handlers run the real Electron calls for the OA
+  // page only, after the same sender check as the clipboard handlers.
+  function isOaPageSender(event: { sender: WebContents; senderFrame?: { url: string } | null }): boolean {
+    const fromChat = event.sender === oaView?.webContents || event.sender === photoViewWindow?.webContents || oaPopups.has(event.sender)
+    if (!fromChat) return false
+    try {
+      const frameUrl = event.senderFrame?.url || ""
+      if (!frameUrl) return true
+      return new URL(frameUrl).origin === new URL(layoutUrl()).origin
+    } catch { return false }
+  }
+  function plainDialogOptions(input: unknown): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(JSON.stringify(input ?? {})) as unknown
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
+    } catch { return {} }
+  }
+  ipcMain.handle("oa:dialog-save", async (event, options: unknown) => {
+    try {
+      if (!isOaPageSender(event)) return { canceled: true }
+      return await dialog.showSaveDialog(plainDialogOptions(options) as Electron.SaveDialogOptions)
+    } catch { return { canceled: true } }
+  })
+  ipcMain.on("oa:dialog-save-sync", (event, options: unknown) => {
+    try {
+      event.returnValue = isOaPageSender(event)
+        ? dialog.showSaveDialogSync(plainDialogOptions(options) as Electron.SaveDialogOptions)
+        : { canceled: true }
+    } catch { event.returnValue = { canceled: true } }
+  })
+  ipcMain.handle("oa:dialog-open", async (event, options: unknown) => {
+    try {
+      if (!isOaPageSender(event)) return { canceled: true, filePaths: [] }
+      return await dialog.showOpenDialog(plainDialogOptions(options) as Electron.OpenDialogOptions)
+    } catch { return { canceled: true, filePaths: [] } }
+  })
+  ipcMain.on("oa:dialog-open-sync", (event, options: unknown) => {
+    try {
+      event.returnValue = isOaPageSender(event)
+        ? dialog.showOpenDialogSync(plainDialogOptions(options) as Electron.OpenDialogOptions)
+        : []
+    } catch { event.returnValue = [] }
+  })
+  ipcMain.handle("oa:dialog-message", async (event, options: unknown) => {
+    try {
+      if (!isOaPageSender(event)) return { response: 0, checkboxChecked: false }
+      return await dialog.showMessageBox(plainDialogOptions(options) as unknown as Electron.MessageBoxOptions)
+    } catch { return { response: 0, checkboxChecked: false } }
+  })
+  ipcMain.on("oa:dialog-message-sync", (event, options: unknown) => {
+    try {
+      event.returnValue = isOaPageSender(event)
+        ? dialog.showMessageBoxSync(plainDialogOptions(options) as unknown as Electron.MessageBoxOptions)
+        : 0
+    } catch { event.returnValue = 0 }
+  })
+  ipcMain.handle("oa:shell-open-path", async (event, target: unknown) => {
+    try {
+      if (!isOaPageSender(event) || typeof target !== "string" || !target || target.length > 4096) return "路径无效"
+      return await shell.openPath(target)
+    } catch (error) { return error instanceof Error ? error.message : "打开失败" }
+  })
+  ipcMain.handle("oa:shell-show-item", async (event, target: unknown) => {
+    try {
+      if (!isOaPageSender(event) || typeof target !== "string" || !target || target.length > 4096) return false
+      shell.showItemInFolder(target)
+      return true
+    } catch { return false }
+  })
+  ipcMain.handle("oa:shell-open-external", async (event, target: unknown) => {
+    try {
+      if (!isOaPageSender(event) || typeof target !== "string" || !isSafeWebUrl(target)) return false
+      await shell.openExternal(target)
+      return true
+    } catch { return false }
+  })
+  ipcMain.on("oa:get-path", (event, name: unknown) => {
+    try {
+      const allowed = ["downloads", "pictures", "documents", "desktop", "temp", "userData", "home", "appData"]
+      event.returnValue = isOaPageSender(event) && typeof name === "string" && (allowed as string[]).includes(name)
+        ? app.getPath(name as "downloads")
+        : ""
+    } catch { event.returnValue = "" }
+  })
   ipcMain.on("oa:attention", () => {
     attention.attractAttention().catch(() => {})
   })
