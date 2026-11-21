@@ -4,12 +4,27 @@ const IMAGE = "img:not(.oli-emoji-item-img):not(.error-image):not(.delete-image)
 const DECORATION = "svg, [aria-hidden='true'], button, [role='button'], [role='toolbar']";
 const EDITABLE = "input, textarea, [contenteditable]:not([contenteditable='false'])";
 
+// Same mapping as emojiPreview in message-popup.js: OA emoji are <img>
+// with empty textContent, so copy text from the alt label instead.
+function emojiText(alt) {
+  const label = String(alt || "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim().replace(/^\[(.*)\]$/, "$1").trim();
+  if (label === "含泪的笑脸") return "🥲";
+  if (/\p{Extended_Pictographic}/u.test(label)) return label;
+  return label ? "[" + label + "]" : "[表情]";
+}
+
 function plainText(fragment) {
   fragment.querySelectorAll(DECORATION).forEach(node => node.remove());
   fragment.querySelectorAll("br").forEach(node => node.replaceWith("\n"));
   fragment.querySelectorAll("p, div, li").forEach(node => {
     if (node.nextSibling) node.append("\n");
   });
+  // Emoji images carry no text: replace each with its alt text so the
+  // copied text keeps the emoji instead of dropping it ("收到 🥲" used
+  // to copy as "收到 "). Other inline images have no text either: mark
+  // them with their alt or [图片] instead of dropping them silently.
+  fragment.querySelectorAll("img.oli-emoji-item-img").forEach(node => node.replaceWith(emojiText(node.getAttribute("alt"))));
+  fragment.querySelectorAll("img").forEach(node => node.replaceWith(node.getAttribute("alt") || "[图片]"));
   return fragment.textContent;
 }
 
@@ -127,6 +142,12 @@ function installChatClipboard(win, bridge) {
     context = null;
     if (!captured || Date.now() - captured.at > 15_000 || !captured.message.isConnected ||
       !target?.closest || !isCopyCommand(target, captured.message)) return;
+    // The hijack only applies to the OA right-click menu (a body-level
+    // overlay). A "复制" button inside another message's hover toolbar
+    // must keep working on that message instead of copying the
+    // right-clicked one.
+    const clickedMessage = target.closest(MESSAGE);
+    if (clickedMessage && clickedMessage !== captured.message) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     win.document.body.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true }));
@@ -137,4 +158,4 @@ function installChatClipboard(win, bridge) {
   }, true);
 }
 
-module.exports = { installChatClipboard };
+module.exports = { installChatClipboard, emojiText };

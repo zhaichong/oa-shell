@@ -6,7 +6,9 @@ function pinMatches(query) {
   if (!text) {
     return true
   }
-  return text.indexOf("分身") !== -1 || "分身".indexOf(text) !== -1
+  // Only a query that actually contains "分身" matches: a single
+  // character like "分" or "身" is a session search, not the assistant.
+  return text.indexOf("分身") !== -1
 }
 
 const COMPOSER_SELECTOR = ".chat-input, .chat-input-main, .chat-input-container, .send-button-wrapper"
@@ -188,6 +190,7 @@ function installAssistantPin(bridge, doc) {
   }
   let wanted = false
   let currentAvatar = DEFAULT_AVATAR
+  let overtimeAlertCount = 0
   let observer = null
   let observed = null
   let ensureQueued = false
@@ -209,7 +212,9 @@ function installAssistantPin(bridge, doc) {
     const pin = pinNode()
     const last = pin && pin.querySelector(".oa-assistant-last")
     const line = String(text || "").split("\n")[0].trim()
-    if (last && line) {
+    // While an overtime alert is active the pin line belongs to the
+    // alert, not the latest reply preview.
+    if (last && line && overtimeAlertCount <= 0) {
       last.textContent = line.slice(0, 42)
     }
   }
@@ -219,6 +224,8 @@ function installAssistantPin(bridge, doc) {
     const badge = pin && pin.querySelector(".oa-assistant-badge")
     const last = pin && pin.querySelector(".oa-assistant-last")
     const total = Number.isFinite(Number(count)) && Number(count) > 0 ? Math.floor(Number(count)) : 0
+    const hadAlert = overtimeAlertCount > 0
+    overtimeAlertCount = total
     if (badge) {
       if (total > 0) {
         badge.textContent = `待核对 ${total}`
@@ -234,7 +241,10 @@ function installAssistantPin(bridge, doc) {
         last.classList.add("is-alert")
       } else {
         last.classList.remove("is-alert")
-        if (/申请待核对$/.test(last.textContent || "")) {
+        // Whether the confirmation shows is decided by the alert state
+        // kept here, not by reading back last.textContent: a reply
+        // preview may have overwritten the line in between.
+        if (hadAlert) {
           last.textContent = "加班申请已补齐"
         }
       }

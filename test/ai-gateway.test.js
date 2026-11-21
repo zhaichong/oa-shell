@@ -188,6 +188,10 @@ test("normalizes trailing gateway routes, previews models before saving, forward
     });
     assert.equal(answer.text, "共 2 个 Bug。");
     assert.match(askBody.messages[0].content, /BUG-1/);
+    // Third-party task data is fenced off in the system prompt so a
+    // task title cannot smuggle instructions into the assistant.
+    assert.match(askBody.messages[0].content, /第三方系统返回的数据/);
+    assert.match(askBody.messages[0].content, /不得执行/);
     assert.equal(askBody.messages[1].content, "在吗");
     assert.equal(askBody.messages[3].content, "我有几个bug");
 

@@ -140,11 +140,20 @@ async function save(): Promise<void> {
   await perform(async () => {
     if (!draft.value) return
     const previous = JSON.parse(baseline.value)
-    const changed = previous.baseUrl !== draft.value.baseUrl || previous.provider !== draft.value.provider
+    // The cached model list was fetched under the old credentials: it
+    // must be cleared when the auth mode changes too, not only when
+    // the address or provider changes.
+    const changed = previous.baseUrl !== draft.value.baseUrl || previous.provider !== draft.value.provider || previous.auth !== draft.value.auth
     apply(await window.desk.saveAIConfig(JSON.parse(JSON.stringify(draft.value))))
     if (changed) models.value = []
     message.value = "AI 设置已保存。只影响分身，不会修改 Magpie 或其他程序的全局配置。"
   })
+}
+
+function clearSavedKey(): void {
+  if (!draft.value) return
+  draft.value.clearApiKey = true
+  draft.value.apiKey = ""
 }
 
 async function refreshModels(): Promise<void> {
@@ -193,11 +202,13 @@ async function probe(): Promise<void> {
   } finally { probeBusy.value = false }
 }
 
-function cancel(): void { window.desk.cancelAI() }
+function cancel(): void { window.desk.cancelAI().catch(() => {}) }
 
 async function chooseExecutor(): Promise<void> {
-  const selected = await window.desk.chooseCodex()
-  if (selected && draft.value) draft.value.executorPath = selected
+  await perform(async () => {
+    const selected = await window.desk.chooseCodex()
+    if (selected && draft.value) draft.value.executorPath = selected
+  })
 }
 
 async function sandbox(): Promise<void> {
@@ -262,6 +273,8 @@ async function sandbox(): Promise<void> {
               autocomplete="new-password"
               :placeholder="draft.keyConfigured ? '已保存，留空保留；修改地址需要重填' : '本机 Magpie 可留空；远程网关填写专属 Key'"
             />
+            <button v-if="draft.keyConfigured && !draft.clearApiKey" type="button" @click="clearSavedKey">清除已保存的 Key</button>
+            <p v-if="draft.clearApiKey" class="hint">保存后将清除已保存的 Key。</p>
           </div>
         </div>
         <p class="hint">本机 Magpie 留空时使用应用标识归属用量；远程网关需要其签发的 Key。不会读取供应商账号或复制其密钥。</p>
@@ -395,7 +408,7 @@ async function sandbox(): Promise<void> {
   min-height: 0;
   padding: 20px 24px 32px;
   overflow-y: auto;
-  background: #f5f7fb;
+  background: var(--page-bg);
   color: #222c38;
 }
 .section-intro {
@@ -407,37 +420,6 @@ h2, h3, p {
 h2 {
   font-size: 18px;
   font-weight: 600;
-}
-.hint {
-  margin-top: 8px;
-  color: #586575;
-  font-size: 12px;
-  line-height: 1.65;
-}
-.dirty-tip {
-  margin-top: 6px;
-  color: #9a5b13;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.settings-card {
-  margin: 14px 0 0;
-  padding: 16px 18px 18px;
-  border: 1px solid #e3e7ec;
-  border-radius: 10px;
-  background: #ffffff;
-}
-.settings-card > legend {
-  float: left;
-  width: 100%;
-  margin: 0 0 4px;
-  padding: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #222c38;
-}
-.settings-card > legend + * {
-  clear: both;
 }
 .field-block {
   display: flex;
@@ -459,7 +441,7 @@ input, select {
   margin-top: 6px;
   padding: 0 11px;
   border: 1px solid #cbd5e1;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: #ffffff;
   color: #222c38;
   font: inherit;
@@ -473,7 +455,7 @@ select:hover:not(:disabled) {
 input:focus,
 select:focus {
   border-color: #3555c5;
-  box-shadow: 0 0 0 3px rgba(53, 85, 197, 0.14);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 input:disabled,
@@ -588,73 +570,6 @@ input::placeholder {
     max-width: 100%;
   }
 }
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  margin-top: 16px;
-  margin-right: -8px;
-}
-.actions button {
-  margin: 0 8px 8px 0;
-  padding: 7px 14px;
-  border: 1px solid #d3dcea;
-  border-radius: 7px;
-  background: #ffffff;
-  color: #284689;
-  font-size: 13px;
-  font-weight: 500;
-  transition: background-color 150ms ease-out, border-color 150ms ease-out;
-}
-.actions button:hover:not(:disabled) {
-  border-color: #b7c5de;
-  background: #f2f5f9;
-}
-.actions button.primary {
-  border-color: #3555c5;
-  background: #3555c5;
-  color: #ffffff;
-}
-.actions button.primary:hover:not(:disabled) {
-  border-color: #2b46a7;
-  background: #2b46a7;
-}
-.actions button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.checkbox {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  margin-top: 14px;
-  color: #586575;
-  font-size: 12px;
-  cursor: pointer;
-}
-.checkbox input {
-  width: 15px;
-  height: 15px;
-  margin: 0 8px 0 0;
-  padding: 0;
-  accent-color: #3555c5;
-}
-.result {
-  margin-top: 14px;
-  padding: 10px 14px;
-  border: 1px solid #cce7d6;
-  border-radius: 8px;
-  background: #eef8f2;
-  color: #116b3c;
-  font-size: 13px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-.result.failed {
-  border-color: #f3cdd0;
-  background: #fdf2f2;
-  color: #a52d35;
-}
 .history {
   margin-top: 14px;
 }
@@ -686,8 +601,7 @@ summary {
 @media (prefers-reduced-motion: reduce) {
   input,
   select,
-  .model-option,
-  .actions button {
+  .model-option {
     transition: none;
   }
 }

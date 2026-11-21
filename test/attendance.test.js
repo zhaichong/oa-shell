@@ -24,7 +24,7 @@ test("uses the calendar month containing the given day", () => {
   });
 });
 
-test("counts a punch at 19:00 as one hour and ignores earlier punches", () => {
+test("counts a punch at 19:00 as one hour and shows an 18:59 punch as below the threshold", () => {
   const view = normalizeAttendance({
     code: 200,
     data: {
@@ -42,11 +42,29 @@ test("counts a punch at 19:00 as one hour and ignores earlier punches", () => {
   assert.equal(view.state, "ready");
   assert.equal(view.totalText, "3 小时 15 分钟");
   assert.equal(view.totalLabel, "加班");
+  assert.equal(view.unappliedCount, 2);
   assert.deepEqual(view.details, [
+    { id: "2026-11-03", date: "11-03", text: "18:00–18:59 · 59 分钟 · 未到加班起算点", applied: false, counted: false },
     { id: "2026-11-12", date: "11-12", text: "18:00–19:00 · 1 小时", applied: false },
     { id: "2026-11-16", date: "11-16", text: "18:00–20:15 · 2 小时 15 分钟", applied: false }
   ]);
   assert.equal(JSON.stringify(view).includes("1.5"), false);
+});
+
+test("workEnd and overtimeStart settings move the overtime window", () => {
+  const view = normalizeAttendance({
+    code: 200,
+    data: {}
+  }, { code: 200, data: { displayData: [] } }, monthRange(new Date(2026, 10, 17)), [
+    { date: "2026-11-03", clocks: ["17:45"] },
+    { date: "2026-11-12", clocks: ["19:00"] }
+  ], { workEnd: "17:30", overtimeStart: "18:30" });
+  assert.equal(view.totalText, "1 小时 30 分钟");
+  assert.equal(view.unappliedCount, 1);
+  assert.deepEqual(view.details, [
+    { id: "2026-11-03", date: "11-03", text: "17:30–17:45 · 15 分钟 · 未到加班起算点", applied: false, counted: false },
+    { id: "2026-11-12", date: "11-12", text: "17:30–19:00 · 1 小时 30 分钟", applied: false }
+  ]);
 });
 
 test("marks a punch day applied only when that date has an overtime request", () => {
@@ -85,6 +103,36 @@ test("keeps a failed attendance response as an error when no punches return", ()
   const view = normalizeAttendance({ code: 401, msg: "not-json" }, null, monthRange(new Date(2026, 10, 17)), []);
   assert.equal(view.state, "error");
   assert.equal(view.details.length, 0);
+});
+
+test("a failed overtime-detail fetch leaves the applied state unknown instead of not applied", () => {
+  const view = normalizeAttendance({ code: 200, data: {} }, { code: 401, msg: "not-json" }, monthRange(new Date(2026, 10, 17)), [
+    { date: "2026-11-17", clocks: ["09:00", "19:30"] }
+  ]);
+  assert.equal(view.state, "ready");
+  assert.equal(view.details[0].applied, false);
+  assert.equal(view.details[0].appliedUnknown, true);
+  assert.equal(view.unappliedCount, 0);
+});
+
+test("a successful empty detail list means no application, not unknown", () => {
+  const view = normalizeAttendance({ code: 200, data: {} }, { code: 200, data: { displayData: [] } }, monthRange(new Date(2026, 10, 17)), [
+    { date: "2026-11-17", clocks: ["09:00", "19:30"] }
+  ]);
+  assert.equal(view.state, "ready");
+  assert.equal(view.details[0].applied, false);
+  assert.equal(view.details[0].appliedUnknown, undefined);
+  assert.equal(view.unappliedCount, 1);
+});
+
+test("a day's own flow link still counts as applied when the detail fetch failed", () => {
+  const view = normalizeAttendance({ code: 200, data: {} }, { code: 401, msg: "not-json" }, monthRange(new Date(2026, 10, 17)), [
+    { date: "2026-11-17", clocks: ["09:00", "19:30"], flows: [{ requestId: 9001, requestName: "加班申请-2026-11-17" }] }
+  ]);
+  assert.equal(view.state, "ready");
+  assert.equal(view.details[0].applied, true);
+  assert.equal(view.details[0].appliedUnknown, undefined);
+  assert.equal(view.unappliedCount, 0);
 });
 
 test("loads each day's punch record instead of the overtime summary", () => {
@@ -127,4 +175,19 @@ test("treats pending overtime flows from punch calendar or detail rows as applie
   ]);
   assert.equal(cleared.details[1].applied, true);
   assert.equal(cleared.unappliedCount, 0);
+});
+
+test("overtime detail query is scoped to the current user", () => {
+  const source = pageFetchExpression(monthRange(new Date(2026, 10, 17)));
+  assert.match(source, /detailUser = window\.TEAMS/);
+  assert.match(source, /userId: detailUser/);
+});
+
+test("punches whose signTime is an object with .time are read", () => {
+  const range = monthRange(new Date(2026, 10, 17));
+  const result = normalizeAttendance({}, { code: 0, data: { datas: [] } }, range, [
+    { date: "2026-11-10", clocks: [{ signTime: { time: "20:00:00" } }], flows: [] }
+  ]);
+  assert.equal(result.details.length, 1);
+  assert.match(result.details[0].text, /20:00/);
 });

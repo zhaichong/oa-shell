@@ -2,6 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   normalizeMessagePayload,
+  isHiddenNode,
+  resolveActiveChatName,
   extractDomSessionMessage,
   installDomMessageObserver,
   computePopupBounds,
@@ -329,7 +331,8 @@ test("group notifications keep their conversation when enriched or deduplicated"
   assert.equal(extractDomSessionMessage(doc, { ...direct, content: "另一条消息" }), null);
   assert.deepEqual(extractDomSessionMessage(doc), { ...group, unread: true });
   sessions.appendChild(makeSessionItem({ id: "other", name: "另一个群", last: "谭启春：流程有新反馈", unreadBadge: "1" }));
-  assert.equal(extractDomSessionMessage(doc, direct), null);
+  // An ambiguous match falls back to the first session instead of no popup at all.
+  assert.deepEqual(extractDomSessionMessage(doc, direct), { ...group, unread: true });
 
   const timers = createFakeTimers();
   const controller = createPopupController({
@@ -462,6 +465,48 @@ test("installDomMessageObserver skips initial baseline, detects new incoming mes
   observer.disconnect();
 });
 
+test("a new unread session arriving while scrolling is deferred, not swallowed", () => {
+  let clock = 5000;
+  const layout = makeElement("div", { classes: ["weapp-em-im-main-layout"] });
+  const sessionList = makeElement("div", { classes: ["session"] });
+  const itemA = makeSessionItem({ id: "a", name: "张三", last: "早上好", active: true });
+  sessionList.appendChild(itemA);
+
+  const msgMain = makeElement("div", { classes: ["message-main"] });
+  const titleBar = makeElement("div", { classes: ["title-bar"] });
+  const titleName = makeElement("div", { classes: ["name"], text: "张三" });
+  titleBar.appendChild(titleName);
+  msgMain.appendChild(titleBar);
+  msgMain.appendChild(makeOliMessage({ id: "m1", text: "早上好" }));
+
+  layout.appendChild(sessionList);
+  layout.appendChild(msgMain);
+
+  const doc = makeDoc([layout]);
+  const received = [];
+  const observer = installDomMessageObserver(doc, (msg) => received.push(msg), {
+    debounceMs: 0,
+    now: () => clock
+  });
+  doc.triggerMutations();
+  assert.equal(received.length, 0);
+
+  // A brand-new unread session appears while the user is scrolling the
+  // session list: nothing fires during the scroll window...
+  doc.dispatchEvent({ type: "scroll", target: sessionList });
+  const itemB = makeSessionItem({ id: "b", name: "李四", last: "请看附件", unreadBadge: "1" });
+  sessionList.appendChild(itemB);
+  doc.triggerMutations();
+  assert.equal(received.length, 0);
+
+  // ...but once the scrolling stops, the deferred message is emitted.
+  clock += 1000;
+  doc.triggerMutations();
+  assert.deepEqual(received, [{ sender: "李四", content: "请看附件" }]);
+
+  observer.disconnect();
+});
+
 test("sending an unread message to colleague A then switching to colleague B never triggers a popup", () => {
   let clock = 5000;
   const layout = makeElement("div", { classes: ["weapp-em-im-main-layout"] });
@@ -535,6 +580,62 @@ test("sending an unread message to colleague A then switching to colleague B nev
   observer.disconnect();
 });
 
+test("switching sessions without a click never pops up for late-loading history", () => {
+  let clock = 5000;
+  const layout = makeElement("div", { classes: ["weapp-em-im-main-layout"] });
+  const sessionList = makeElement("div", { classes: ["session"] });
+  const gongbinItem = makeSessionItem({ id: "gb", name: "巩彬", last: "在吗", active: true });
+  const zhangsanItem = makeSessionItem({ id: "zs", name: "张三", last: "好的" });
+  sessionList.appendChild(gongbinItem);
+  sessionList.appendChild(zhangsanItem);
+
+  const msgMain = makeElement("div", { classes: ["message-main"] });
+  const titleBar = makeElement("div", { classes: ["title-bar"] });
+  const titleName = makeElement("div", { classes: ["name"], text: "巩彬" });
+  titleBar.appendChild(titleName);
+  msgMain.appendChild(titleBar);
+  msgMain.appendChild(makeOliMessage({ id: "m1", text: "在吗" }));
+
+  layout.appendChild(sessionList);
+  layout.appendChild(msgMain);
+
+  const doc = makeDoc([layout]);
+  const received = [];
+  const observer = installDomMessageObserver(doc, (msg) => received.push(msg), {
+    debounceMs: 0,
+    now: () => clock
+  });
+  doc.triggerMutations();
+  assert.equal(received.length, 0);
+
+  // Programmatic / keyboard switch to 张三 (no click event at all):
+  // the old messages are still in the DOM when the switch is observed.
+  clock += 2000;
+  gongbinItem.classList.remove("is-active");
+  zhangsanItem.classList.add("is-active");
+  titleName.textContent = "张三";
+  doc.triggerMutations();
+  assert.equal(received.length, 0);
+
+  // 张三's history loads late (after the 1200ms switch window): it is
+  // history, not a new message, so no popup may fire.
+  clock += 2000;
+  for (const existing of [...msgMain.querySelectorAll(".oli-message")]) {
+    existing.remove();
+  }
+  msgMain.appendChild(makeOliMessage({ id: "m10", text: "昨天发你的表格" }));
+  doc.triggerMutations();
+  assert.equal(received.length, 0);
+
+  // A genuinely new message in 张三 afterwards still pops up.
+  clock += 500;
+  msgMain.appendChild(makeOliMessage({ id: "m11", text: "刚刚更新了" }));
+  doc.triggerMutations();
+  assert.deepEqual(received, [{ sender: "张三", content: "刚刚更新了" }]);
+
+  observer.disconnect();
+});
+
 test("computePopupBounds positions popup at bottom-right of workArea", () => {
   assert.deepEqual(computePopupBounds({ x: 0, y: 0, width: 1920, height: 1040 }), {
     x: 1568,
@@ -589,6 +690,12 @@ test("createPopupController manages auto-dismiss, timer reset, dedupe, and fallb
   timers.advance(100);
   assert.equal(controller.show({ sender: "工作消息", content: "收到一条新消息，点击查看" }), false);
   assert.deepEqual(controller.current(), { sender: "王五", content: "审批已通过" });
+  // Even after the 1500ms dedupe window, a fallback still cannot
+  // overwrite the specific message on screen.
+  timers.advance(2000);
+  assert.equal(controller.isOpen(), true);
+  assert.equal(controller.show({ sender: "工作消息", content: "收到一条新消息，点击查看" }), false);
+  assert.deepEqual(controller.current(), { sender: "王五", content: "审批已通过" });
 
   // Manual dismiss clears timer and hides popup
   assert.equal(controller.dismiss(), true);
@@ -607,4 +714,96 @@ test("buildPopupHtml renders compliant Flex layout and navigation actions", () =
   assert.ok(html.includes("https://oa-popup.local/close"));
   assert.equal(/display\s*:\s*grid/i.test(html), false);
   assert.equal(/(?:^|[;\s{])gap\s*:/i.test(html), false);
+});
+
+test("extractDomSessionMessage returns unread sessions with an empty preview", () => {
+  const layout = makeElement("div", { classes: ["weapp-em-im-main-layout"] });
+  const sessionList = makeElement("div", { classes: ["session"] });
+  sessionList.appendChild(makeSessionItem({ id: "s1", name: "张三", last: "", unreadBadge: "1" }));
+  layout.appendChild(sessionList);
+  const doc = makeDoc([layout]);
+  assert.deepEqual(extractDomSessionMessage(doc), {
+    sender: "张三",
+    content: "",
+    unread: true
+  });
+});
+
+test("two sessions with the same name are tracked separately", () => {
+  const layout = makeElement("div", { classes: ["weapp-em-im-main-layout"] });
+  const sessionList = makeElement("div", { classes: ["session"] });
+  const itemA = makeSessionItem({ name: "张三", last: "旧消息一" });
+  const itemB = makeSessionItem({ name: "张三", last: "旧消息二", unreadBadge: "1" });
+  sessionList.appendChild(itemA);
+  sessionList.appendChild(itemB);
+  const msgMain = makeElement("div", { classes: ["message-main"] });
+  const titleBar = makeElement("div", { classes: ["title-bar"] });
+  titleBar.appendChild(makeElement("div", { classes: ["name"], text: "张三" }));
+  msgMain.appendChild(titleBar);
+  layout.appendChild(sessionList);
+  layout.appendChild(msgMain);
+  const doc = makeDoc([layout]);
+  const received = [];
+  installDomMessageObserver(doc, (msg) => received.push(msg), { debounceMs: 0 });
+  assert.equal(received.length, 0);
+  // A third same-named session arrives unread with the same preview
+  // text the second one already had: without separate records it
+  // would be mistaken for the known session and never pop up.
+  const itemC = makeSessionItem({ name: "张三", last: "旧消息二", unreadBadge: "1" });
+  sessionList.appendChild(itemC);
+  doc.triggerMutations();
+  assert.deepEqual(received, [{ sender: "张三", content: "旧消息二" }]);
+});
+
+test("truncation never splits an emoji in half", () => {
+  const content = "a".repeat(159) + "🥲";
+  const normalized = normalizeMessagePayload({ sender: "张三", content });
+  assert.equal(normalized.content, content);
+  assert.ok(normalized.content.endsWith("🥲"));
+});
+
+test("isHiddenNode sees class-based hiding through computed style", () => {
+  const hiddenByClass = {
+    hidden: false,
+    style: {},
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ display: "none" }) } }
+  };
+  assert.equal(isHiddenNode(hiddenByClass), true);
+  const visible = {
+    hidden: false,
+    style: {},
+    ownerDocument: { defaultView: { getComputedStyle: () => ({ display: "block" }) } }
+  };
+  assert.equal(isHiddenNode(visible), false);
+  assert.equal(isHiddenNode({ hidden: true, style: {} }), true);
+  assert.equal(isHiddenNode({ hidden: false, style: { display: "none" } }), true);
+});
+
+test("resolveActiveChatName uses the title, falling back to the active session when the title is empty", () => {
+  const root = makeElement("div");
+  const titleBar = makeElement("div", { classes: ["title-bar"] });
+  const titleName = makeElement("div", { classes: ["name"], text: "李四" });
+  titleBar.appendChild(titleName);
+  root.appendChild(titleBar);
+  // Title present: it is the earliest switch signal, so it wins even
+  // when the session list still marks the old chat active.
+  assert.equal(resolveActiveChatName(root, [{ sender: "张三", active: true }]), "李四");
+  // Title empty (still loading): fall back to the active session.
+  titleName.textContent = "";
+  assert.equal(resolveActiveChatName(root, [{ sender: "张三", active: true }]), "张三");
+  assert.equal(resolveActiveChatName(root, [{ sender: "张三", active: false }]), "");
+});
+
+test("createPopupController recovers when showing the popup throws", () => {
+  const timers = createFakeTimers();
+  const controller = createPopupController({
+    showPopup() { throw new Error("render failed"); },
+    hidePopup() {},
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+    now: timers.now
+  });
+  assert.equal(controller.show({ sender: "张三", content: "下午开会" }), false);
+  assert.equal(controller.isOpen(), false);
+  assert.deepEqual(controller.current(), null);
 });

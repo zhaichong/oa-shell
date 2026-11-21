@@ -149,7 +149,7 @@ async function remove(): Promise<void> {
   min-height: 0;
   overflow-y: auto;
   padding: 20px 24px 32px;
-  background: #f5f7fb;
+  background: var(--page-bg);
   color: #222c38;
 }
 h2, h3, p {
@@ -159,86 +159,42 @@ h2 {
   font-size: 18px;
   font-weight: 600;
 }
-.intro p, .hint {
+.intro p {
   margin-top: 8px;
   color: #586575;
   font-size: 12px;
   line-height: 1.65;
 }
-.dirty-tip {
-  margin-top: 6px;
-  color: #9a5b13;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.connection-tabs, .actions {
+.connection-tabs {
   display: flex;
   flex-wrap: wrap;
   margin-top: 16px;
-  margin-right: -8px;
+  border-bottom: 1px solid #e3e7ec;
 }
-button {
-  margin: 0 8px 8px 0;
-  padding: 7px 14px;
-  border: 1px solid #d3dcea;
-  border-radius: 7px;
-  background: #ffffff;
-  color: #284689;
+.connection-tabs button {
+  margin-right: 20px;
+  padding: 10px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #586575;
   font-size: 13px;
   font-weight: 500;
-  transition: background-color 150ms ease-out, border-color 150ms ease-out;
 }
-button:hover:not(:disabled) {
-  border-color: #b7c5de;
-  background: #f2f5f9;
+.connection-tabs button:hover:not(.selected) {
+  color: #222c38;
 }
-button.selected, button.primary {
-  border-color: #3555c5;
-  background: #3555c5;
-  color: #ffffff;
-}
-button.selected:hover:not(:disabled),
-button.primary:hover:not(:disabled) {
-  border-color: #2b46a7;
-  background: #2b46a7;
-}
-button.danger {
-  border-color: #ebc9cc;
-  color: #a52d35;
-}
-button.danger:hover:not(:disabled) {
-  border-color: #dfa9ae;
-  background: #fdf2f2;
-}
-button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.settings-card {
-  margin: 14px 0 0;
-  padding: 16px 18px 18px;
-  border: 1px solid #e3e7ec;
-  border-radius: 10px;
-  background: #ffffff;
+.connection-tabs button.selected {
+  border-bottom-color: #3555c5;
+  color: #3555c5;
+  font-weight: 600;
 }
 fieldset {
   margin: 0;
   padding: 0;
   border: 0;
 }
-legend {
-  float: left;
-  width: 100%;
-  margin: 0 0 4px;
-  padding: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #222c38;
-}
-legend + * {
-  clear: both;
-}
-label {
+label:not(.checkbox) {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -254,7 +210,7 @@ input, select, textarea {
   margin-top: 6px;
   padding: 8px 11px;
   border: 1px solid #cbd5e1;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: #ffffff;
   color: #222c38;
   font: inherit;
@@ -276,7 +232,7 @@ input:focus,
 select:focus,
 textarea:focus {
   border-color: #3555c5;
-  box-shadow: 0 0 0 3px rgba(53, 85, 197, 0.14);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 input:disabled,
@@ -305,20 +261,6 @@ input::placeholder, textarea::placeholder {
     max-width: 100%;
   }
 }
-.checkbox {
-  flex-direction: row;
-  align-items: center;
-  color: #586575;
-  font-weight: 400;
-  cursor: pointer;
-}
-.checkbox input {
-  width: 15px;
-  height: 15px;
-  margin: 0 8px 0 0;
-  padding: 0;
-  accent-color: #3555c5;
-}
 details {
   margin-top: 16px;
 }
@@ -326,22 +268,6 @@ summary {
   color: #284689;
   font-weight: 600;
   cursor: pointer;
-}
-.result {
-  margin-top: 14px;
-  padding: 10px 14px;
-  border: 1px solid #cce7d6;
-  border-radius: 8px;
-  background: #eef8f2;
-  color: #116b3c;
-  font-size: 13px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-}
-.result.failed {
-  border-color: #f3cdd0;
-  background: #fdf2f2;
-  color: #a52d35;
 }
 .preview {
   margin-top: 16px;

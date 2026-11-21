@@ -42,3 +42,14 @@ test("keyboard clicks work and slow loading releases the pending state", () => {
   assert.deepEqual(shown.at(-1), { text: "图片打开较慢，请稍后重试", busy: false });
   assert.equal(feedback.click(1), true);
 });
+
+test("the slow message stays dismissible when the viewer opens late", () => {
+  const { feedback, shown, timers } = setup();
+  assert.equal(feedback.click(1), true);
+  const timeout = Array.from(timers.values()).find((timer) => timer.delay === 10000);
+  timeout.callback();
+  assert.deepEqual(shown.at(-1), { text: "图片打开较慢，请稍后重试", busy: false });
+  assert.equal(feedback.isLoading(), true);
+  feedback.finish();
+  assert.equal(feedback.isLoading(), false);
+});

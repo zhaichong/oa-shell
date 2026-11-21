@@ -230,7 +230,9 @@ async function previewQianfanTasks(config, headers, fetcher, signal) {
       status: field(String(item.status || ""), 80),
       assignee: field(String(item.responsibleName || user.name || ""), 80),
       priority: field(String(item.priority || item.taskType || ""), 80),
-      url: base + "/#/tasks"
+      // No verified per-task deep link for Qianfan: leave it empty
+      // rather than pointing every task at the generic task list.
+      url: ""
     };
   });
   return { items, total: activeOnly.length, hasMore: activeOnly.length > 50 };

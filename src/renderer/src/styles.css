@@ -5,6 +5,15 @@
   --ink: #222c38;
   --muted: #586575;
   --line: #e3e7ec;
+  /* 全站统一的样式规矩（2026-11-20 UI 统一）：圆角只留 6 / 8 / 12 三档，
+     页面灰只用一个，焦点光圈、警告棕、成功绿底、禁用透明度各只一种。 */
+  --page-bg: #f5f6f8;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --focus-ring: 0 0 0 3px rgba(53, 85, 197, 0.12);
+  --warn-ink: #92400e;
+  --success-bg: #e7f3eb;
 }
 
 * {
@@ -77,6 +86,131 @@ body {
   border-bottom-color: #3555c5;
   color: #3555c5;
   font-weight: 600;
+}
+
+/* 两个设置页共用的样式（AI 模型页、任务系统页各写一份已合并到这里）。
+   以后改设置页样式只改这一处，两页一起变。 */
+.settings-card {
+  margin: 14px 0 0;
+  padding: 16px 18px 18px;
+  border: 1px solid #e3e7ec;
+  border-radius: var(--radius-lg);
+  background: #ffffff;
+}
+
+.settings-card legend {
+  float: left;
+  width: 100%;
+  margin: 0 0 4px;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #222c38;
+}
+
+.settings-card legend + * {
+  clear: both;
+}
+
+.hint {
+  margin-top: 8px;
+  color: #586575;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.dirty-tip {
+  margin-top: 6px;
+  color: var(--warn-ink);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  margin-right: -8px;
+}
+
+.actions button {
+  margin: 0 8px 8px 0;
+  padding: 7px 14px;
+  border: 1px solid #d3dcea;
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  color: #284689;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out;
+}
+
+.actions button:hover:not(:disabled) {
+  border-color: #b7c5de;
+  background: #f2f5f9;
+}
+
+.actions button.primary {
+  border-color: #3555c5;
+  background: #3555c5;
+  color: #ffffff;
+}
+
+.actions button.primary:hover:not(:disabled) {
+  border-color: #2b46a7;
+  background: #2b46a7;
+}
+
+.actions button.danger {
+  border-color: #ebc9cc;
+  color: #a52d35;
+}
+
+.actions button.danger:hover:not(:disabled) {
+  border-color: #dfa9ae;
+  background: #fdf2f2;
+}
+
+.actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.checkbox {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 14px;
+  color: #586575;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.checkbox input {
+  width: 15px;
+  height: 15px;
+  margin: 0 8px 0 0;
+  padding: 0;
+  accent-color: #3555c5;
+}
+
+.result {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid #cce7d6;
+  border-radius: var(--radius-md);
+  background: var(--success-bg);
+  color: #116b3c;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.result.failed {
+  border-color: #f3cdd0;
+  background: #fdf2f2;
+  color: #a52d35;
 }
 
 button {
@@ -167,7 +301,7 @@ button:disabled {
   display: block;
   padding: 0;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   background: transparent;
 }
 
@@ -201,7 +335,7 @@ button:disabled {
   width: 264px;
   padding: 12px;
   border: 1px solid #d3dcea;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: #ffffff;
   box-shadow: 0 10px 28px rgba(34, 44, 56, 0.14);
 }
@@ -229,8 +363,8 @@ button:disabled {
   margin: 0 8px 8px 0;
   padding: 1px;
   border: 2px solid transparent;
-  border-radius: 10px;
-  background: #f5f7fb;
+  border-radius: var(--radius-md);
+  background: var(--page-bg);
 }
 
 .avatar-choice .face {
@@ -318,7 +452,7 @@ button:disabled {
 
 .colleague-name {
   display: block;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 20px;
 }
@@ -335,7 +469,7 @@ button:disabled {
 }
 
 .colleague-status.is-alert {
-  color: #b45309;
+  color: var(--warn-ink);
   font-weight: 600;
 }
 
@@ -393,7 +527,7 @@ button:disabled {
   min-height: 46px;
   margin-right: 12px;
   padding: 4px 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: #f0f2f6;
   color: #344150;
   font-variant-numeric: tabular-nums;
@@ -457,7 +591,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   padding: 1px 7px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #e7f3eb;
   color: #116b3c;
   font-size: 12px;
@@ -475,7 +609,7 @@ button:disabled {
   align-items: center;
   padding: 1px 7px;
   border: 1px solid #f59e0b;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #fef3c7;
   color: #92400e;
   font-size: 12px;
@@ -503,7 +637,7 @@ button:disabled {
   min-height: 0;
   padding: 20px 18px 12px;
   overflow: auto;
-  background: #f5f6f8;
+  background: var(--page-bg);
 }
 
 .opening-card {
@@ -525,7 +659,7 @@ button:disabled {
 .opening {
   margin: 12px 0 4px;
   color: var(--ink);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 1.5;
 }
@@ -560,7 +694,7 @@ button:disabled {
   flex-shrink: 0;
   margin-right: 8px;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #d97706;
   color: #ffffff;
   font-size: 11px;
@@ -650,7 +784,7 @@ button:disabled {
 
 .md-inline-code {
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #e8edf5;
   color: #243554;
   font-family: Consolas, "Cascadia Mono", monospace;
@@ -795,7 +929,7 @@ button:disabled {
   margin: 0 6px 8px 0;
   padding: 4px 10px;
   border: 1px solid #d5dce6;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: #ffffff;
   color: #243044;
   font-size: 12px;
@@ -822,7 +956,7 @@ button:disabled {
 
 .composer input {
   width: 100%;
-  height: 42px;
+  height: 38px;
   padding: 0 44px 0 12px;
   border: 1px solid #d5dce6;
   border-radius: 8px;
@@ -844,7 +978,7 @@ button:disabled {
 .composer input:focus {
   border-color: var(--accent);
   background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(53, 85, 197, 0.12);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 
@@ -915,7 +1049,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   height: 100%;
-  background: #f4f6f8;
+  background: var(--page-bg);
 }
 
 .server-card {
@@ -929,7 +1063,7 @@ button:disabled {
 
 .server-card h1 {
   margin: 0 0 8px;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 650;
 }
 
@@ -947,7 +1081,7 @@ button:disabled {
 
 .server-card input {
   width: 100%;
-  height: 40px;
+  height: 38px;
   margin-bottom: 16px;
   padding: 0 12px;
   border: 1px solid #cfd6e0;
@@ -956,8 +1090,9 @@ button:disabled {
 }
 
 .server-card input:focus {
-  outline: 2px solid #d5e0f8;
   border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+  outline: none;
 }
 
 .server-actions {
@@ -984,7 +1119,7 @@ button:disabled {
 .server-enter:disabled,
 .server-cancel:disabled {
   cursor: default;
-  opacity: 0.55;
+  opacity: 0.6;
 }
 
 .server-cancel {
@@ -995,7 +1130,7 @@ button:disabled {
 
 .server-error {
   margin-top: -8px;
-  color: #b45309;
+  color: var(--warn-ink);
 }
 
 .server-waiting {

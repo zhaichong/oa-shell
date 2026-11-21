@@ -73,7 +73,7 @@ const unappliedCount = computed(() => {
   if (typeof attendance.unappliedCount === "number") {
     return attendance.unappliedCount
   }
-  return (attendance.details || []).filter((item) => !item.applied).length
+  return (attendance.details || []).filter((item) => item.counted !== false && !item.applied && !item.appliedUnknown).length
 })
 const presence = computed(() => {
   if (commandBusy.value) {
@@ -121,15 +121,25 @@ onMounted(async () => {
     const saved = await window.desk.restoreAssistantSession()
     if (saved) {
       const session = JSON.parse(saved) as { turns: Turn[]; draft: string; turnId: number }
-      turns.value = session.turns
-      command.value ||= session.draft
-      turnId = session.turnId
-      await scrollThread()
+      if (session && Array.isArray(session.turns) && typeof session.turnId === "number") {
+        turns.value = session.turns
+        command.value ||= session.draft
+        turnId = session.turnId
+        await scrollThread()
+      }
     }
+  } catch {
+    // A damaged saved session must not block the sidebar: drop it
+    // and continue with a fresh state below.
   } finally {
     sessionRestoring = false
   }
-  receiveState(await window.desk.getState())
+  try {
+    receiveState(await window.desk.getState())
+  } catch {
+    // If the first state read fails, the sidebar still renders with
+    // the default state; the next pushed state fills it in.
+  }
 })
 
 onUnmounted(() => {
@@ -156,7 +166,7 @@ async function pickAvatar(id: string): Promise<void> {
     state.value = await window.desk.setAvatar(id)
     avatarMenuOpen.value = false
   } catch (error) {
-    avatarError.value = error instanceof Error ? error.message : "更换头像失败"
+    avatarError.value = (error instanceof Error ? error.message : "更换头像失败").replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "")
   } finally {
     avatarBusy.value = false
   }
@@ -189,10 +199,23 @@ function clearTurns(): void {
 }
 
 async function togglePanel(): Promise<void> {
-  state.value = await window.desk.togglePanel()
+  if (!window.desk) {
+    return
+  }
+  try {
+    state.value = await window.desk.togglePanel()
+  } catch {
+    // Panel toggle failed (e.g. the main-process handler rejected):
+    // leave the panel state as-is instead of an unhandled rejection.
+  }
 }
 
-function stopAI(): void { window.desk.cancelAI() }
+function stopAI(): void {
+  if (!window.desk) {
+    return
+  }
+  window.desk.cancelAI().catch(() => {})
+}
 
 function spokenCommand(input: string): string {
   if (input === "/加班") {
@@ -257,14 +280,18 @@ function buildCard(attendance: AttendanceState | undefined): DetailCard | null {
   }))
   return {
     month: monthLabel(attendance.monthKey || ""),
-    count: rows.length,
+    count: rows.filter((row) => row.counted !== false).length,
     rows
   }
 }
 
 function cardSummary(attendance: AttendanceState, card: DetailCard): string {
-  const applied = card.rows.filter(row => row.applied).length
-  return `本月打卡加班 ${attendance.totalText}。已申请 ${applied} 条，待核对 ${card.count - applied} 条。`
+  const counted = card.rows.filter(row => row.counted !== false)
+  const applied = counted.filter(row => row.applied).length
+  const unknown = counted.filter(row => row.appliedUnknown).length
+  const unapplied = counted.length - applied - unknown
+  const suffix = unknown > 0 ? `，${unknown} 条未核对` : ""
+  return `本月打卡加班 ${attendance.totalText}。已申请 ${applied} 条，待核对 ${unapplied} 条${suffix}。`
 }
 
 function receiveState(next: DeskState): void {
@@ -298,7 +325,11 @@ async function runCommand(preset?: string): Promise<void> {
     return
   }
   const resolved = resolveCommand(typed)
-  command.value = ""
+  // Only clear the input when the submitted text came from it: a
+  // shortcut button used to wipe a draft the user had already typed.
+  if (!preset) {
+    command.value = ""
+  }
   pushTurn("user", typed.startsWith("/") ? spokenCommand(typed) : typed)
   commandBusy.value = true
   pendingLabel.value = resolved === "/加班" || resolved === "/刷新" ? "正在看本月加班" : "正在处理"
@@ -446,7 +477,7 @@ async function runCommand(preset?: string): Promise<void> {
               <span>{{ turn.card.month }}</span>
               <span class="record-summary">
                 <span>{{ turn.card.count }} 条</span>
-                <span v-if="turn.card.rows.some((row) => !row.applied)" class="record-unapplied">{{ turn.card.rows.filter((row) => !row.applied).length }} 条待核对</span>
+                <span v-if="turn.card.rows.some((row) => row.counted !== false && !row.applied && !row.appliedUnknown)" class="record-unapplied">{{ turn.card.rows.filter((row) => row.counted !== false && !row.applied && !row.appliedUnknown).length }} 条待核对</span>
               </span>
             </div>
             <ul class="detail-list">
@@ -464,7 +495,8 @@ async function runCommand(preset?: string): Promise<void> {
                   <div class="detail-meta">
                     <span v-if="item.notes" class="detail-note">{{ item.notes }}</span>
                     <span v-if="item.applied" class="application-badge" title="OA 出勤记录已关联加班申请（审批中或已通过）">已申请</span>
-                    <span v-else class="unapplied-badge" title="尚未匹配到这一天的加班申请">待核对</span>
+                    <span v-else-if="item.appliedUnknown" class="unapplied-badge" title="加班详情没拉到，暂不知道这一天有没有申请">未核对</span>
+                    <span v-else-if="item.counted !== false" class="unapplied-badge" title="尚未匹配到这一天的加班申请">待核对</span>
                     <span v-if="item.applicationPeriod" class="detail-note">申请时段 {{ item.applicationPeriod }}</span>
                   </div>
                 </div>

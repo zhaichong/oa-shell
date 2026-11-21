@@ -4,6 +4,7 @@ const DEFAULT_SETTINGS = {
   oaUrl: "https://oa.yarward.com:35877/sp/em/main",
   workStart: "09:00",
   workEnd: "18:00",
+  overtimeStart: "19:00",
   overtimeRemindMinutes: 60,
   missedCheckInMinutes: 15,
   missedApplicationTime: "21:00",
@@ -18,7 +19,7 @@ function dateKey(date) {
 }
 
 function normalizeClock(value) {
-  const match = /^(\d{2}):(\d{2})(?::\d{2})?$/.exec(value || "");
+  const match = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(String(value || "").trim());
   if (!match) {
     return "";
   }
@@ -27,10 +28,15 @@ function normalizeClock(value) {
   if (hours > 23 || minutes > 59) {
     return "";
   }
-  return match[1] + ":" + match[2];
+  // Accept "9:00" as well as "09:00": always store the padded form.
+  return String(hours).padStart(2, "0") + ":" + match[2];
 }
 
 function clampInteger(value, fallback, min, max) {
+  // An empty field used to become 0 (Number("") === 0), not the default.
+  if (value === "" || value === null || value === undefined) {
+    return fallback;
+  }
   const number = Number(value);
   if (!Number.isInteger(number)) {
     return fallback;
@@ -44,7 +50,10 @@ function normalizeOaUrl(value) {
   }
   try {
     const parsed = new URL(value);
-    if (parsed.protocol !== "https:") {
+    // Only the company OA host may run with full bridge privileges:
+    // the OA URL pins the origin every sender check trusts, so any
+    // other https host here would hand those privileges to that site.
+    if (parsed.protocol !== "https:" || parsed.hostname !== "oa.yarward.com") {
       return DEFAULT_SETTINGS.oaUrl;
     }
     if (parsed.hostname === "oa.yarward.com" && (parsed.pathname === "/" || parsed.pathname === "")) {
@@ -61,13 +70,17 @@ function normalizeOaUrl(value) {
 function normalizeSettings(input) {
   const source = input || {};
   const oaUrl = normalizeOaUrl(source.oaUrl);
-  const workdays = Array.isArray(source.workdays)
+  const filteredWorkdays = Array.isArray(source.workdays)
     ? [...new Set(source.workdays.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))].sort()
-    : DEFAULT_SETTINGS.workdays.slice();
+    : [];
+  // An empty list used to be kept, silently disabling the workday
+  // concept for downstream overtime logic.
+  const workdays = filteredWorkdays.length ? filteredWorkdays : DEFAULT_SETTINGS.workdays.slice();
   return {
     oaUrl,
     workStart: normalizeClock(source.workStart) || DEFAULT_SETTINGS.workStart,
     workEnd: normalizeClock(source.workEnd) || DEFAULT_SETTINGS.workEnd,
+    overtimeStart: normalizeClock(source.overtimeStart) || DEFAULT_SETTINGS.overtimeStart,
     overtimeRemindMinutes: clampInteger(source.overtimeRemindMinutes, DEFAULT_SETTINGS.overtimeRemindMinutes, 0, 720),
     missedCheckInMinutes: clampInteger(source.missedCheckInMinutes, DEFAULT_SETTINGS.missedCheckInMinutes, 0, 180),
     missedApplicationTime: normalizeClock(source.missedApplicationTime) || DEFAULT_SETTINGS.missedApplicationTime,
@@ -118,7 +131,9 @@ function normalizeSubmittedOvertimeDates(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return out;
   }
-  Object.keys(input).slice(0, 200).forEach((key) => {
+  // Keep the newest 200 entries: keys arrive in chronological order,
+  // so slicing from the front would drop the newest submissions.
+  Object.keys(input).slice(-200).forEach((key) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
       return;
     }

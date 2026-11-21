@@ -33,8 +33,52 @@ test("a corrupt data file loads as empty instead of throwing", () => {
     const data = store.load();
     assert.equal(typeof data.settings.oaUrl, "string");
     assert.equal(Array.isArray(data.tasks), true);
+    // The damaged bytes are kept aside instead of being wiped by the
+    // next save: the corrupt copy must still exist.
+    const kept = fs.readdirSync(path.dirname(filePath)).filter((name) => name.startsWith(path.basename(filePath) + ".corrupt-"));
+    assert.equal(kept.length, 1);
+    assert.equal(fs.readFileSync(path.join(path.dirname(filePath), kept[0]), "utf8"), "{not json");
+    store.save(data);
+    assert.equal(fs.readFileSync(path.join(path.dirname(filePath), kept[0]), "utf8"), "{not json");
+  } finally {
+    fs.readdirSync(path.dirname(filePath))
+      .filter((name) => name.startsWith(path.basename(filePath)))
+      .forEach((name) => fs.rmSync(path.join(path.dirname(filePath), name), { force: true }));
+  }
+});
+
+test("a corrupt data file falls back to the last good backup", () => {
+  const filePath = tempPath("corrupt-bak");
+  const store = createStore(filePath);
+  try {
+    store.save({ settings: { workStart: "08:30" } });
+    store.save({ settings: { workStart: "08:30" } });
+    assert.equal(fs.existsSync(filePath + ".bak"), true);
+    fs.writeFileSync(filePath, "{broken", "utf8");
+    const data = store.load();
+    assert.equal(data.settings.workStart, "08:30");
+    store.save(data);
+    assert.equal(store.load().settings.workStart, "08:30");
+  } finally {
+    fs.readdirSync(path.dirname(filePath))
+      .filter((name) => name.startsWith(path.basename(filePath)))
+      .forEach((name) => fs.rmSync(path.join(path.dirname(filePath), name), { force: true }));
+  }
+});
+
+test("a stale tmp file is removed on save", () => {
+  const filePath = tempPath("stale-tmp");
+  const store = createStore(filePath);
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath + ".tmp", "junk", "utf8");
+    store.save({ settings: { workStart: "08:30" } });
+    assert.equal(fs.existsSync(filePath + ".tmp"), false);
+    assert.equal(store.load().settings.workStart, "08:30");
   } finally {
     fs.rmSync(filePath, { force: true });
+    fs.rmSync(filePath + ".tmp", { force: true });
+    fs.rmSync(filePath + ".bak", { force: true });
   }
 });
 

@@ -17,6 +17,12 @@ const normalizePayload = messagePopup && typeof messagePopup.normalizeMessagePay
 const isGenericSender = messagePopup && typeof messagePopup.isGenericSender === "function"
   ? messagePopup.isGenericSender
   : function () { return false; };
+const isFallbackMessage = messagePopup && typeof messagePopup.isFallbackMessage === "function"
+  ? messagePopup.isFallbackMessage
+  : function (message) {
+      if (!message) return true;
+      return isGenericSender(message.sender) && (!message.content || message.content === DEFAULT_CONTENT || message.content === FLASH_FALLBACK_CONTENT);
+    };
 
 const FALLBACK_DELAY_MS = 120;
 const DEFAULT_SENDER = "工作消息";
@@ -167,6 +173,13 @@ function scheduleFlashMessage(payload) {
 }
 
 function rememberNotice(resolved, hasListeners, triggerClick) {
+  // A generic fallback ("got a new message") never replaces a specific
+  // message on screen (see the popup controller): if the current notice
+  // is specific, keep it, or a click on the specific popup would fire
+  // the fallback's handler (or nothing at all).
+  if (latestNotice && isFallbackMessage(resolved) && !isFallbackMessage(latestNotice)) {
+    return;
+  }
   latestNotice = {
     sender: resolved.sender,
     content: resolved.content,
@@ -198,6 +211,18 @@ function installAttentionHook(NativeNotification) {
     const resolved = resolveNotificationPayload(this.title, opts);
     signalAttention();
     sendMessagePopup(resolved);
+    // A real Notification fires `show` when displayed. The popup is
+    // shown by the main process right after this constructor runs, so
+    // dispatch it on the next tick; without this, OA code awaiting
+    // onshow waits forever.
+    const dispatchShow = function () {
+      self.dispatchEvent({ type: "show", target: self, currentTarget: self, preventDefault: noop, stopPropagation: noop });
+    };
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(dispatchShow);
+    } else if (typeof setTimeout === "function") {
+      setTimeout(dispatchShow, 0);
+    }
     rememberNotice(
       resolved,
       function () {
@@ -247,6 +272,15 @@ function installAttentionHook(NativeNotification) {
     if (!event || !event.type) {
       return true;
     }
+    // A real Notification also fires the on<type> property handler.
+    const handler = this["on" + event.type];
+    if (typeof handler === "function") {
+      try {
+        handler.call(this, event);
+      } catch (error) {
+        noop(error);
+      }
+    }
     const list = this._listeners[event.type];
     if (list) {
       list.slice().forEach((listener) => listener.call(this, event));
@@ -254,13 +288,9 @@ function installAttentionHook(NativeNotification) {
     return true;
   };
   ShellNotification.prototype.close = function () {
-    if (typeof this.onclose === "function") {
-      try {
-        this.onclose.call(this, { type: "close", target: this });
-      } catch (error) {
-        noop(error);
-      }
-    }
+    // Close notifies both the onclose property and close listeners,
+    // like a real Notification does.
+    this.dispatchEvent({ type: "close", target: this, currentTarget: this, preventDefault: noop, stopPropagation: noop });
   };
   ShellNotification.__oaShell = true;
   Object.defineProperty(ShellNotification, "permission", {
@@ -315,7 +345,19 @@ function createClientNotification() {
     }
     return this;
   };
-  ClientNotification.prototype.once = ClientNotification.prototype.on;
+  ClientNotification.prototype.once = function (event, listener) {
+    if (event !== "click" || typeof listener !== "function") {
+      return this;
+    }
+    // A once handler must fire a single time: wrap it so it removes
+    // itself before running, like ipc.once does.
+    const self = this;
+    function wrapper() {
+      self.removeListener("click", wrapper);
+      listener.apply(self, arguments);
+    }
+    return this.on("click", wrapper);
+  };
   ClientNotification.prototype.removeListener = function (event, listener) {
     if (event === "click") {
       const index = this._click.indexOf(listener);
@@ -359,6 +401,12 @@ function installClientBridge() {
       return false;
     }
     if (targetSender && latestNotice.sender && !isGenericSender(targetSender) && !isGenericSender(latestNotice.sender) && targetSender !== latestNotice.sender) {
+      return false;
+    }
+    // The click belongs to the message on screen: never fire another
+    // message's handler when the content differs.
+    const targetContent = payload && typeof payload.content === "string" ? payload.content : "";
+    if (targetContent && latestNotice.content && targetContent !== latestNotice.content && !isFallbackMessage(payload) && !isFallbackMessage(latestNotice)) {
       return false;
     }
     latestNotice.triggerClick();
@@ -465,7 +513,9 @@ function installClientBridge() {
         }
       } else if (channel === "cancel-tray-flash") {
         const state = hostWindowState();
-        if (state.focused !== false) {
+        // Unknown state ({} when the handler is absent/errors) must not
+        // cancel flashing: only a focused window is a reason to stop.
+        if (state.focused === true) {
           forwardFlash(false);
         }
       } else if (channel === "open-message-popup-window") {
@@ -494,6 +544,17 @@ function installClientBridge() {
         } catch (error) {
           noop(error);
         }
+      } else if (channel === "download-file") {
+        // Chat-file downloads: the OA page sends the download request
+        // here; the main process runs the real Electron download and
+        // reports progress/completion back through oa:bridge-ipc.
+        // Dropping this used to leave every 保存 / 另存为 click doing
+        // nothing at all (the download sat in "wait" forever).
+        try {
+          ipcRenderer.send("download-file", payload);
+        } catch (error) {
+          noop(error);
+        }
       }
       return ipc;
     },
@@ -504,7 +565,11 @@ function installClientBridge() {
       if (channel === "write-clipboard-text") {
         return writeClipboardText(payload && typeof payload === "object" ? payload.text : payload);
       }
-      if (typeof channel === "string" && (channel.indexOf("oa:dialog-") === 0 || channel.indexOf("oa:shell-") === 0)) {
+      // Keep this allowlist in sync with sendSync below: OA page code can
+      // call clipboard through invoke, and getPath through either.
+      // "get-preferences" is the download-preference read the OA page
+      // does before every chat-file download.
+      if (typeof channel === "string" && (channel.indexOf("oa:dialog-") === 0 || channel.indexOf("oa:shell-") === 0 || channel.indexOf("oa:clipboard-") === 0 || channel === "oa:get-path" || channel === "get-preferences")) {
         return ipcRenderer.invoke(channel, payload);
       }
       return Promise.resolve(null);
@@ -562,7 +627,15 @@ function installClientBridge() {
     showSaveDialog: function (options) { return ipc.invoke("oa:dialog-save", dialogOptions(options)); },
     showSaveDialogSync: function (options) {
       const result = ipc.sendSync("oa:dialog-save-sync", dialogOptions(options));
-      return result && typeof result === "object" ? result : { canceled: true };
+      // Electron's showSaveDialogSync returns a string path ("" when the
+      // user cancels), not an object. Map it to the object shape OA
+      // expects; anything else (denied, failed) counts as cancelled.
+      if (typeof result === "string") {
+        return result ? { canceled: false, filePath: result } : { canceled: true };
+      }
+      return result && typeof result === "object" && typeof result.filePath === "string" && result.filePath
+        ? { canceled: false, filePath: result.filePath }
+        : { canceled: true };
     }
   };
   const isPhotoViewPage = Boolean(
@@ -588,8 +661,14 @@ function installClientBridge() {
       }
       return true;
     },
-    isMaximized: function () { return false; },
-    isFullScreen: function () { return false; },
+    isMaximized: function () {
+      const state = hostWindowState();
+      return state.maximized === true;
+    },
+    isFullScreen: function () {
+      const state = hostWindowState();
+      return state.fullscreen === true;
+    },
     isDestroyed: function () { return false; },
     isMinimized: function () {
       const state = hostWindowState();
@@ -693,7 +772,17 @@ function installClientBridge() {
     clipboard: {
       writeImage: writeClipboardImage,
       writeText: writeClipboardText,
-      readText: function () { return ""; }
+      readText: function () {
+        try {
+          if (typeof ipcRenderer.sendSync === "function") {
+            const text = ipcRenderer.sendSync("oa:clipboard-read-text");
+            return typeof text === "string" ? text : "";
+          }
+        } catch (error) {
+          noop(error);
+        }
+        return "";
+      }
     },
     shell: {
       openExternal: function (url) { return ipc.invoke("oa:shell-open-external", typeof url === "string" ? url : ""); },
@@ -733,10 +822,14 @@ function installClientBridge() {
     }
     if (name === "url") {
       return {
-        format: function () { return ""; },
+        format: function (value) {
+          if (value && typeof value.href === "string") return value.href;
+          if (typeof value === "string") return value;
+          return "";
+        },
         parse: function (value) {
           try {
-            return new URL(value);
+            return new URL(value, window.location.href);
           } catch (error) {
             return {};
           }
@@ -775,19 +868,18 @@ function installClientBridge() {
     return originalRemoveEventListener(type, wrapped || listener, options);
   };
   let reportedBlur = false;
-  let blurTicks = 0;
   setInterval(function () {
     const state = hostWindowState();
     if (state.focused === false) {
-      if (!reportedBlur || blurTicks < 8) {
+      // One blur event per focus-to-blur transition: OA blur handlers
+      // ran eight times per blur before this.
+      if (!reportedBlur) {
         reportedBlur = true;
-        blurTicks += 1;
         window.dispatchEvent(new Event("blur"));
       }
       return;
     }
     reportedBlur = false;
-    blurTicks = 0;
   }, 500);
   try {
     delete window.require;

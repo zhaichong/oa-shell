@@ -5,8 +5,12 @@ const { messagePane, pinMatches, shouldBlockComposer } = require("../src/assista
 test("keeps the assistant visible unless the search is for someone else", () => {
   assert.equal(pinMatches(""), true)
   assert.equal(pinMatches("  "), true)
-  assert.equal(pinMatches("分"), true)
+  // A single character is a session search, not the assistant: only a
+  // query containing the full word "分身" keeps the pin visible.
+  assert.equal(pinMatches("分"), false)
+  assert.equal(pinMatches("身"), false)
   assert.equal(pinMatches("分身"), true)
+  assert.equal(pinMatches("找分身"), true)
   assert.equal(pinMatches("张三"), false)
 })
 

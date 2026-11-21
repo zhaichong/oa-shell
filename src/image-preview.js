@@ -2,10 +2,12 @@ const IMAGE_SELECTOR = ".oli-message .image-content img.image:not(.error-image):
 
 function createPreviewFeedback({ show, hide, schedule = setTimeout, cancel = clearTimeout }) {
   let loading = false;
+  let slow = false;
   let timer = null;
 
   function finish() {
     loading = false;
+    slow = false;
     if (timer !== null) {
       cancel(timer);
       timer = null;
@@ -14,7 +16,7 @@ function createPreviewFeedback({ show, hide, schedule = setTimeout, cancel = cle
   }
 
   function click(detail) {
-    if (loading) {
+    if (loading && !slow) {
       return false;
     }
     if (detail !== 0 && detail !== 1) {
@@ -24,7 +26,10 @@ function createPreviewFeedback({ show, hide, schedule = setTimeout, cancel = cle
     loading = true;
     show("正在打开图片…", true);
     timer = schedule(() => {
-      loading = false;
+      // Stay "loading" through the slow phase (flagged separately) so
+      // the viewer observer can still dismiss this message early when
+      // the image does open; a fresh click starts a new cycle.
+      slow = true;
       show("图片打开较慢，请稍后重试", false);
       timer = schedule(finish, 4000);
     }, 10000);

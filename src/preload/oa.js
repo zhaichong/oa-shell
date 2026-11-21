@@ -144,8 +144,13 @@ require("../oa-bridge");
         return response.clone().text().then(function (text) {
           var headers = new Headers(response.headers);
           headers.delete("content-length");
-          return new Response(rewriteText(text), {
-            status: response.status,
+          var status = response.status;
+          // 101/204/205/304 responses must not carry a body: constructing
+          // a Response with one throws, turning a successful request
+          // into a rejected promise.
+          var body = (status === 101 || status === 204 || status === 205 || status === 304) ? null : rewriteText(text);
+          return new Response(body, {
+            status: status,
             statusText: response.statusText,
             headers: headers
           });

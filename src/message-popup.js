@@ -1,6 +1,14 @@
 const MAX_SENDER_LENGTH = 40;
 const MAX_CONTENT_LENGTH = 160;
 
+// String.prototype.slice can split a surrogate pair (emoji) in half,
+// leaving a lone surrogate that renders as �. Slice on code points.
+function sliceText(value, maxLength) {
+  const text = String(value || "");
+  if (text.length <= maxLength) return text;
+  return Array.from(text).slice(0, maxLength).join("");
+}
+
 const SENDER_KEYS = [
   "sender",
   "senderName",
@@ -247,9 +255,9 @@ function normalizeMessagePayload(input, extra) {
   }
 
   return {
-    sender: sender.slice(0, MAX_SENDER_LENGTH),
-    content: content.slice(0, MAX_CONTENT_LENGTH),
-    ...(conversation && conversation !== sender ? { conversation: conversation.slice(0, MAX_SENDER_LENGTH) } : {})
+    sender: sliceText(sender, MAX_SENDER_LENGTH),
+    content: sliceText(content, MAX_CONTENT_LENGTH),
+    ...(conversation && conversation !== sender ? { conversation: sliceText(conversation, MAX_SENDER_LENGTH) } : {})
   };
 }
 
@@ -272,6 +280,16 @@ function isHiddenNode(node) {
   }
   if (node.style && node.style.display === "none") {
     return true;
+  }
+  // Sessions hidden by a CSS class (not the hidden attribute or an
+  // inline style) used to count as visible.
+  try {
+    const view = node.ownerDocument && node.ownerDocument.defaultView;
+    if (view && typeof view.getComputedStyle === "function" && view.getComputedStyle(node).display === "none") {
+      return true;
+    }
+  } catch (error) {
+    // No document view (test fakes): fall through.
   }
   return false;
 }
@@ -381,8 +399,8 @@ function readSessionItems(root) {
     }
     result.push({
       key,
-      sender: sender.slice(0, MAX_SENDER_LENGTH),
-      content: content.slice(0, MAX_CONTENT_LENGTH),
+      sender: sliceText(sender, MAX_SENDER_LENGTH),
+      content: sliceText(content, MAX_CONTENT_LENGTH),
       unread,
       active,
       index: result.length
@@ -414,13 +432,22 @@ function readOliMessageContent(msgEl) {
 }
 
 function resolveActiveChatName(root, sessions) {
+  // The title bar is the earliest signal of a session switch: it
+  // changes before (or together with) the active session item, so a
+  // title change must count as a switch, or the new chat's history
+  // looks like a fresh incoming message and pops up by mistake.
+  // Only when the title is empty (still loading) fall back to the
+  // active session item, which is stabler than no title at all.
   const titleEl = root.querySelector ? root.querySelector(".title-bar .name") : null;
   const title = collapseWhitespace(titleEl ? titleEl.textContent : "");
   if (title) {
-    return title.slice(0, MAX_SENDER_LENGTH);
+    return sliceText(title, MAX_SENDER_LENGTH);
   }
   const activeSession = sessions.find((item) => item.active);
-  return activeSession ? activeSession.sender : "";
+  if (activeSession) {
+    return activeSession.sender;
+  }
+  return "";
 }
 
 function readActiveIncomingMessage(root, sessions) {
@@ -434,7 +461,7 @@ function readActiveIncomingMessage(root, sessions) {
   if (hasClass(lastMsg, "me")) {
     return null;
   }
-  const content = readOliMessageContent(lastMsg).slice(0, MAX_CONTENT_LENGTH);
+  const content = sliceText(readOliMessageContent(lastMsg), MAX_CONTENT_LENGTH);
   if (!sender || !content) {
     return null;
   }
@@ -464,7 +491,7 @@ function extractDomSessionMessage(doc, candidate) {
     return null;
   }
   const sessions = readSessionItems(root);
-  const unreadItems = sessions.filter((item) => item.unread && item.sender && item.content);
+  const unreadItems = sessions.filter((item) => item.unread && item.sender);
   if (candidate && candidate.content) {
     const matches = unreadItems.flatMap((item) => {
       const speaker = splitSenderContent(item.content);
@@ -474,7 +501,7 @@ function extractDomSessionMessage(doc, candidate) {
       }
       return [];
     });
-    return matches.length === 1 ? matches[0] : null;
+    return matches.length ? matches[0] : null;
   }
   const unreadItem = unreadItems[0];
   if (unreadItem) {
@@ -540,7 +567,10 @@ function installDomMessageObserver(doc, onMessage, options = {}) {
   let observer = null;
 
   function emit(message) {
-    if (!message || !message.sender || !message.content) {
+    // Content may be empty for an image/file-only message: the sender
+    // alone is enough to pop up, and the popup fills in its own
+    // default text.
+    if (!message || !message.sender) {
       return;
     }
     const timestamp = now();
@@ -572,7 +602,7 @@ function installDomMessageObserver(doc, onMessage, options = {}) {
   function recordUserSend() {
     const text = readComposerText();
     if (text) {
-      lastUserSent = { text: text.slice(0, MAX_CONTENT_LENGTH), at: now() };
+      lastUserSent = { text: sliceText(text, MAX_CONTENT_LENGTH), at: now() };
     }
   }
 
@@ -634,16 +664,25 @@ function installDomMessageObserver(doc, onMessage, options = {}) {
       if (!hasSessionBaseline) {
         for (let index = 0; index < sessions.length; index += 1) {
           const item = sessions[index];
-          prevSessions.set(item.key, { content: item.content, unread: item.unread, index: item.index });
+          // Sessions carry no id: two sessions with the same name share
+          // a key, so keep one record per same-named session, in list
+          // order, instead of letting the last one overwrite the first.
+          const records = prevSessions.get(item.key) || [];
+          records.push({ content: item.content, unread: item.unread, index: item.index });
+          prevSessions.set(item.key, records);
         }
         prevTopKey = sessions[0].key;
         hasSessionBaseline = true;
       } else {
         const nextTopKey = sessions[0].key;
+        const seenCount = new Map();
         for (let index = 0; index < sessions.length; index += 1) {
           const item = sessions[index];
-          const prev = prevSessions.get(item.key);
-          if (item.unread && item.sender && item.content) {
+          const records = prevSessions.get(item.key) || [];
+          const seen = seenCount.get(item.key) || 0;
+          seenCount.set(item.key, seen + 1);
+          const prev = records[seen];
+          if (item.unread && item.sender) {
             const isNewUnread = !prev && !scrolling;
             const changedUnread = Boolean(prev && (item.content !== prev.content || !prev.unread));
             const movedToTop = Boolean(
@@ -656,7 +695,20 @@ function installDomMessageObserver(doc, onMessage, options = {}) {
                 : { sender: item.sender, content: item.content });
             }
           }
-          prevSessions.set(item.key, { content: item.content, unread: item.unread, index: item.index });
+          // A new unread item seen while the user is scrolling the
+          // session list is not baselined yet: if it were, the scroll
+          // window would swallow it and no popup would ever fire for
+          // it. Leave it unbaselined so the next check, after the
+          // scrolling stops, emits it as new.
+          if (prev || !item.unread || !scrolling) {
+            const updated = prevSessions.get(item.key) || [];
+            if (seen < updated.length) {
+              updated[seen] = { content: item.content, unread: item.unread, index: item.index };
+            } else {
+              updated.push({ content: item.content, unread: item.unread, index: item.index });
+            }
+            prevSessions.set(item.key, updated);
+          }
         }
         prevTopKey = nextTopKey;
       }
@@ -710,9 +762,17 @@ function installDomMessageObserver(doc, onMessage, options = {}) {
     const activeMsg = readActiveIncomingMessage(root, sessions);
     const sig = activeMsg ? activeMsg.sig : "";
     const prevIndex = prevLastMsgEl ? messages.indexOf(prevLastMsgEl) : -1;
-    const appended = prevLastMsgEl !== null
-      && lastMsgEl !== prevLastMsgEl
-      && (prevIndex !== -1 ? prevIndex < messages.length - 1 : sig !== prevLastMsgSig);
+    if (prevIndex === -1 && prevLastMsgEl !== null) {
+      // The message list was replaced since the last check (switched
+      // sessions, reloaded history, or re-rendered): the "last" message
+      // is history, not a new arrival. Re-baseline silently instead of
+      // popping up for it. A genuinely new message is only recognized
+      // when it is appended after a baseline message still in the list.
+      prevLastMsgEl = lastMsgEl;
+      prevLastMsgSig = sig;
+      return;
+    }
+    const appended = prevLastMsgEl !== null && lastMsgEl !== prevLastMsgEl && prevIndex < messages.length - 1;
 
     if (appended && activeMsg) {
       emit({ sender: activeMsg.sender, content: activeMsg.content });
@@ -872,7 +932,10 @@ function createPopupController({
       active.content === next.content && timestamp - lastShownAt < dedupeMs) {
       return false;
     }
-    if (open && active && !isFallbackMessage(active) && isFallbackMessage(next) && timestamp - lastShownAt < dedupeMs) {
+    // A generic fallback ("got a new message") never replaces a specific
+    // message on screen: the specific one is more useful no matter how
+    // much time has passed since it was shown.
+    if (open && active && !isFallbackMessage(active) && isFallbackMessage(next)) {
       return false;
     }
 
@@ -881,7 +944,15 @@ function createPopupController({
     active = next;
     lastKey = key;
     lastShownAt = timestamp;
-    showPopup({ ...next });
+    try {
+      showPopup({ ...next });
+    } catch (error) {
+      // A failed render must not leave a phantom open state with no
+      // auto-dismiss timer behind.
+      open = false;
+      active = null;
+      return false;
+    }
     timer = schedule(() => {
       timer = null;
       dismiss();
@@ -924,6 +995,7 @@ function buildPopupHtml() {
   }
 
   .popup-card {
+    position: relative;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
@@ -931,7 +1003,7 @@ function buildPopupHtml() {
     height: 100%;
     padding: 10px 14px 12px;
     border: 1px solid #d9e0ea;
-    border-radius: 10px;
+    border-radius: 12px;
     background: #ffffff;
     color: inherit;
     font-family: inherit;
@@ -987,7 +1059,7 @@ function buildPopupHtml() {
     height: 28px;
     padding: 0;
     border: 0;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     color: #586575;
     font-family: inherit;
@@ -1017,7 +1089,7 @@ function buildPopupHtml() {
   .popup-sender {
     overflow: hidden;
     color: #222c38;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
     line-height: 20px;
     text-overflow: ellipsis;
@@ -1028,7 +1100,7 @@ function buildPopupHtml() {
     display: -webkit-box;
     overflow: hidden;
     margin-top: 3px;
-    color: #485668;
+    color: #586575;
     font-family: "Segoe UI", "Microsoft YaHei", "Segoe UI Emoji", sans-serif;
     font-size: 13px;
     line-height: 18px;
@@ -1115,6 +1187,9 @@ function buildPopupHtml() {
 module.exports = {
   normalizeMessagePayload,
   isGenericSender,
+  isFallbackMessage,
+  isHiddenNode,
+  resolveActiveChatName,
   extractDomSessionMessage,
   installDomMessageObserver,
   computePopupBounds,

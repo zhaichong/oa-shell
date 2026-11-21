@@ -16,13 +16,14 @@ import {
   Tray,
   WebContentsView,
   type Rectangle,
+  type Session,
   type WebContents
 } from "electron"
 import fs from "node:fs"
 import path from "node:path"
 import { monthRange, normalizeAttendance, pageFetchExpression } from "../attendance.js"
 import { createAttention } from "../attention.js"
-import { createBoundsSaver } from "../bounds-saver.js"
+import { createBoundsSaver, restoreWindowBounds } from "../bounds-saver.js"
 import { addReminder, cancelReminder, collectDueReminders, formatOvertime, helpText, parseCommand } from "../assistant.js"
 import { createStore } from "../store.js"
 import { createIntegrationStore, previewTasks } from "../integrations.js"
@@ -32,12 +33,32 @@ import { createPopupRegistry } from "../popup-windows.js"
 import { buildPopupHtml, computePopupBounds, createPopupController, normalizeMessagePayload } from "../message-popup.js"
 import { normalizeAvatar } from "../assistant-avatar.js"
 import { createWinFlash } from "../win-flash.js"
+import { parseDownloadPayload, parseDownloadPreferences, resolveDownloadDir, resolveExplicitSavePath, uniqueFilePath } from "../oa-download.js"
 import type { AIModel, AttendanceState, ConnectionConfig, DeskState } from "../shared/desk"
 import { preloadPath, projectRoot, rendererHtml, resourcePath } from "./paths"
 
 const APP_USER_MODEL_ID = "OA"
 const PHOTO_IDLE_MS = 30_000
 const SIDEBAR_IDLE_MS = 60_000
+
+// One OA chat-file download request, as normalized by parseDownloadPayload.
+interface OaDownloadRequest {
+  url: string
+  id: string
+  fid: string
+  isSaveAs: boolean
+  openOnFinish: boolean
+  savePath: string
+  saveIsDefault: boolean
+  saveIsDept: boolean
+  saveClassifyStorage: number
+  fileSepAccount: number
+  fileSepSession: number
+  sessionName: string
+  subCompany: string
+  department: string
+  userName: string
+}
 let integrations: ReturnType<typeof createIntegrationStore>
 let aiStore: ReturnType<typeof createAIStore>
 let aiService: ReturnType<typeof createAIService>
@@ -171,6 +192,7 @@ let tray: Tray | null = null
 let oaView: WebContentsView | null = null
 let sidebarView: WebContentsView | null = null
 let sidebarIdleTimer: ReturnType<typeof setTimeout> | null = null
+let sidebarReclaimAttempts = 0
 let sidebarSession: string | null = null
 let store!: ReturnType<typeof createStore>
 let data!: AppData
@@ -273,6 +295,12 @@ function ensurePhotoViewWindow(): BrowserWindow {
     if (pendingPhotoParams !== null && win.isVisible()) {
       sendPhotoParams(win, pendingPhotoParams)
     }
+  })
+  win.webContents.on("did-fail-load", () => {
+    // A failed load used to leave a blank window with photoViewLoaded
+    // stuck false: reset it so the next open retries the load instead
+    // of assuming the page is ready.
+    photoViewLoaded = false
   })
   const cancelIdleReclaim = (): void => {
     if (photoIdleTimer) clearTimeout(photoIdleTimer)
@@ -409,6 +437,16 @@ function ensurePopupWindow(): BrowserWindow {
   return win
 }
 
+function popupDisplayArea(): Electron.Rectangle {
+  // The popup belongs to the display showing OA, not necessarily the
+  // primary display (a multi-monitor user would otherwise get the
+  // popup on the wrong screen).
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return screen.getDisplayMatching(mainWindow.getBounds()).workArea
+  }
+  return screen.getPrimaryDisplay().workArea
+}
+
 function renderAndShowPopup(payload: PopupMessage): void {
   const win = ensurePopupWindow()
   pendingPopupPayload = payload
@@ -416,13 +454,13 @@ function renderAndShowPopup(payload: PopupMessage): void {
     return
   }
   pendingPopupPayload = null
-  const bounds = computePopupBounds(screen.getPrimaryDisplay().workArea)
+  const bounds = computePopupBounds(popupDisplayArea())
   win.setBounds(bounds)
   win.setAlwaysOnTop(true, "pop-up-menu")
   const script = "window.__renderPopup && window.__renderPopup(" + JSON.stringify(payload) + ")"
   win.webContents.executeJavaScript(script).then(() => {
     if (!win.isDestroyed() && popupController.isOpen()) {
-      win.setBounds(computePopupBounds(screen.getPrimaryDisplay().workArea))
+      win.setBounds(computePopupBounds(popupDisplayArea()))
       win.setAlwaysOnTop(true, "pop-up-menu")
       win.showInactive()
     }
@@ -543,7 +581,9 @@ function ensureFlasher(): ReturnType<typeof createWinFlash> {
 
 function noteAttention(line: string): void {
   try {
-    fs.appendFileSync(path.join(app.getPath("userData"), "attention.log"), new Date().toISOString() + " " + line + "\n")
+    const file = path.join(app.getPath("userData"), "attention.log")
+    if (fs.existsSync(file) && fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + ".1")
+    fs.appendFileSync(file, new Date().toISOString() + " " + line + "\n")
   } catch (error) {
     return
   }
@@ -551,7 +591,14 @@ function noteAttention(line: string): void {
 
 function oaTheme(): string {
   if (!themeCss) {
-    themeCss = fs.readFileSync(resourcePath("resources", "oa-theme.css"), "utf8")
+    try {
+      themeCss = fs.readFileSync(resourcePath("resources", "oa-theme.css"), "utf8")
+    } catch (error) {
+      // A missing or damaged theme file must not crash the main process:
+      // the OA view simply loads unstyled. (The .catch() at the call
+      // sites only covers insertCSS(), not this synchronous read.)
+      return ""
+    }
   }
   return themeCss
 }
@@ -569,6 +616,40 @@ function syncPageFocus(focused: boolean): void {
   oaView.webContents.executeJavaScript(script).catch(() => {})
 }
 
+function reconcileSubmittedOvertimeDates(state: AttendanceState, detail: unknown): AttendanceState {
+  if (!state || state.state !== "ready" || !Array.isArray(state.details)) {
+    return state
+  }
+  // Only reconcile when the OA overtime detail actually returned data:
+  // if it failed, "not applied" means "unknown", not "withdrawn", and
+  // clearing the local mark would be wrong.
+  const detailData = (detail as { data?: unknown } | null)?.data as
+    | { displayData?: unknown; datas?: unknown; list?: unknown; records?: unknown }
+    | undefined
+  const detailRows = detailData ? [detailData.displayData, detailData.datas, detailData.list, detailData.records] : []
+  if (!detailRows.some((rows) => Array.isArray(rows) && rows.length > 0)) {
+    return state
+  }
+  const submitted = data?.submittedOvertimeDates || {}
+  let changed = false
+  for (const item of state.details) {
+    const key = String(item.id || "")
+    if (!key || item.applied) continue
+    if (submitted[key]) {
+      delete submitted[key]
+      changed = true
+    }
+    if (data?.days?.[key]?.applied) {
+      data.days[key].applied = false
+      changed = true
+    }
+  }
+  if (changed) {
+    persist()
+  }
+  return state
+}
+
 function applySubmittedOvertimeDates(state: AttendanceState): AttendanceState {
   if (!state || state.state !== "ready" || !Array.isArray(state.details)) {
     return state
@@ -583,7 +664,13 @@ function applySubmittedOvertimeDates(state: AttendanceState): AttendanceState {
   return {
     ...state,
     details,
-    unappliedCount: details.filter((item) => !item.applied).length
+    // Below-threshold rows (counted === false) are shown in the list but
+    // are not overtime: keep them out of this count, same as
+    // normalizeAttendance does, or the numbers contradict each other
+    // ("共 0 条，已填申请 -1 条"). Rows whose applied state is unknown
+    // (detail fetch failed) are not unapplied either, or the same rows
+    // get subtracted twice when the applied count is derived from this.
+    unappliedCount: details.filter((item) => item.counted !== false && !item.applied && !item.appliedUnknown).length
   }
 }
 
@@ -606,14 +693,17 @@ async function loadAttendance(): Promise<void> {
     if (token !== attendanceToken) {
       return
     }
-    let next = normalizeAttendance(result && result.statis, result && result.detail, range, result && result.punches) as AttendanceState
-    const unauthenticated = !next.message || next.message === "not-json" || /token/i.test(next.message);
+    let next = normalizeAttendance(result && result.statis, result && result.detail, range, result && result.punches, data.settings) as AttendanceState
+    // A login failure can also arrive worded in Chinese (未登录/登录失效/
+    // 认证失败), not only as "not-json" or a token message.
+    const unauthenticated = !next.message || next.message === "not-json" || /token|session|登录|认证/i.test(next.message);
     if (next.state === "error" && unauthenticated) {
       next.state = "login"
       next.message = "登录 OA 后才能读取本月出勤"
-    } else if (next.state === "ready" && !next.totalText && next.details.length === 0) {
+    } else if (next.state === "ready" && next.details.length === 0) {
       next.message = "这个月还没有加班记录"
     }
+    next = reconcileSubmittedOvertimeDates(next, result && result.detail)
     next = applySubmittedOvertimeDates(next)
     attendance = next
     lastAttendanceRefreshAt = Date.now()
@@ -639,11 +729,18 @@ function maybeRefreshAttendance(minAgeMs = 20000): void {
 async function buildAssistantContext(question: string): Promise<string> {
   const lines: string[] = []
   if (attendance.state === "ready") {
-    const details = attendance.details || []
-    const unapplied = details.filter((item) => !item.applied)
+    // Below-threshold rows (counted === false) are shown in the list but
+    // are not overtime: keep them out of the counts here too. Rows whose
+    // applied state is unknown (detail fetch failed) are not counted as
+    // either applied or unapplied.
+    const details = (attendance.details || []).filter((item) => item.counted !== false)
+    const unapplied = details.filter((item) => !item.applied && !item.appliedUnknown)
+    const unknown = details.filter((item) => item.appliedUnknown)
     const unappliedCount = typeof attendance.unappliedCount === "number" ? attendance.unappliedCount : unapplied.length
+    const appliedCount = details.length - unappliedCount - unknown.length
+    const unknownSuffix = unknown.length ? `，${unknown.length} 条未核对` : ""
     lines.push(
-      `本月出勤加班（${attendance.monthKey || "当月"}）：累计 ${attendance.totalText || "0 小时"}，共 ${details.length} 条记录，其中已填申请 ${details.length - unappliedCount} 条，待核对 ${unappliedCount} 条。`
+      `本月出勤加班（${attendance.monthKey || "当月"}）：累计 ${attendance.totalText || "0 小时"}，共 ${details.length} 条记录，其中已填申请 ${appliedCount} 条，待核对 ${unappliedCount} 条${unknownSuffix}。`
     )
     if (unapplied.length) {
       lines.push("尚未匹配到申请的加班明细：" + unapplied.slice(0, 12).map((item) => `${item.date} ${item.text}`).join("；"))
@@ -691,8 +788,12 @@ async function openAssistantPage(target: string): Promise<string> {
   }
   showWindow()
   if (target === "home") {
-    await oaView.webContents.loadURL(layoutUrl())
-    return "正在打开 OA 首页"
+    try {
+      await oaView.webContents.loadURL(layoutUrl())
+      return "正在打开 OA 首页"
+    } catch (error) {
+      return "OA 打不开，请检查网络或 OA 地址"
+    }
   }
   const script = "(() => { var node = document.querySelector('a[title=\"工作消息\"]'); if (node) { node.click(); return true; } return false; })()"
   try {
@@ -755,7 +856,7 @@ async function executeAssistantCommand(input: string): Promise<AssistantResult> 
     return { ok: result.ok, message: result.message }
   }
   if (parsed.name === "cancel" && parsed.text) {
-    const result = cancelReminder(data.tasks || [], parsed.text) as {
+    const result = cancelReminder(data.tasks || [], parsed.text, new Date()) as {
       ok: boolean
       tasks: AssistantTask[]
       message: string
@@ -770,19 +871,36 @@ async function executeAssistantCommand(input: string): Promise<AssistantResult> 
 }
 
 function runAssistantTasks(): void {
-  const result = collectDueReminders(data.tasks || [], new Date()) as {
-    tasks: AssistantTask[]
-    due: AssistantTask[]
+  try {
+    const result = collectDueReminders(data.tasks || [], new Date()) as {
+      tasks: AssistantTask[]
+      due: AssistantTask[]
+    }
+    if (!result.due.length) {
+      return
+    }
+    // Save before notifying: if the save fails, the in-memory tasks are
+    // rolled back so the reminders retry on the next tick instead of
+    // being marked fired in memory and lost on restart.
+    const previousTasks = data.tasks
+    data.tasks = result.tasks
+    try {
+      data = store.save(data) as unknown as AppData
+    } catch (error) {
+      data.tasks = previousTasks
+      throw error
+    }
+    result.due.forEach((task) => {
+      try {
+        notify({ title: "分身提醒", body: task.text })
+      } catch (error) {
+        console.error("分身提醒发送失败：", error instanceof Error ? error.message : error)
+      }
+    })
+    publish()
+  } catch (error) {
+    console.error("分身提醒失败：", error instanceof Error ? error.message : error)
   }
-  if (!result.due.length) {
-    return
-  }
-  data.tasks = result.tasks
-  result.due.forEach((task) => {
-    notify({ title: "分身提醒", body: task.text })
-  })
-  data = store.save(data) as unknown as AppData
-  publish()
 }
 
 function refreshAttendance(): Promise<void> {
@@ -837,7 +955,7 @@ function syncAssistantOvertimeAlert(state: AttendanceState): void {
     return
   }
   const count = state.state === "ready"
-    ? (typeof state.unappliedCount === "number" ? state.unappliedCount : state.details.filter((item) => !item.applied).length)
+    ? (typeof state.unappliedCount === "number" ? state.unappliedCount : state.details.filter((item) => item.counted !== false && !item.applied && !item.appliedUnknown).length)
     : 0
   const script = "window.__setAssistantOvertimeAlert && window.__setAssistantOvertimeAlert(" + JSON.stringify(count) + ")"
   oaView.webContents.executeJavaScript(script).catch(() => {})
@@ -1083,9 +1201,20 @@ function scheduleSidebarReclaim(): void {
     sidebarIdleTimer = null
     if (quitting || data.panelOpen || sidebarView !== view) return
     if (!view.webContents.isDestroyed() && (typeof session !== "string" || session.length > 1_000_000)) {
+      sidebarReclaimAttempts += 1
+      if (sidebarReclaimAttempts >= 3) {
+        // The render page is broken: retrying forever would keep the
+        // view alive without ever reclaiming it. Release it and accept
+        // losing the session.
+        sidebarReclaimAttempts = 0
+        sidebarSession = null
+        releaseSidebarView(view)
+        return
+      }
       scheduleSidebarReclaim()
       return
     }
+    sidebarReclaimAttempts = 0
     sidebarSession = typeof session === "string" ? session : null
     releaseSidebarView(view)
   }, SIDEBAR_IDLE_MS)
@@ -1098,7 +1227,10 @@ function createViews(): void {
   oaSession.setUserAgent(clientAgent)
   oaSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const allowed = new Set(["notifications", "media", "clipboard-read", "clipboard-sanitized-write", "fullscreen"])
-    const host = hostOf(webContents) || hostFrom(details)
+    // The requesting frame's host decides: the top-level URL is always
+    // the OA page, so an embedded third-party iframe would otherwise
+    // inherit the OA page's permissions (camera/mic/clipboard).
+    const host = hostFrom(details) || hostOf(webContents)
     callback(host === "oa.yarward.com" && allowed.has(permission))
   })
   oaView = new WebContentsView({ webPreferences: oaWebPreferences() })
@@ -1107,11 +1239,17 @@ function createViews(): void {
   oaView.webContents.on("did-create-window", (popup, details) => {
     oaPopups.add(popup.webContents)
     popupRegistry.register(details.url, popup)
-    popup.webContents.once("did-finish-load", () => {
-      if (oaView && !oaView.webContents.isDestroyed()) {
-        oaView.webContents.send("oa:image-preview-ready")
-      }
-    })
+    // Only the image viewer may clear the image-loading notice: any
+    // other popup finishing loading used to clear it early, while the
+    // image was still loading. (The photoview path sends this itself
+    // when it opens through the window-open handler.)
+    if (details.url.indexOf("/sp/em/photoview") !== -1) {
+      popup.webContents.once("did-finish-load", () => {
+        if (oaView && !oaView.webContents.isDestroyed()) {
+          oaView.webContents.send("oa:image-preview-ready")
+        }
+      })
+    }
   })
   oaView.webContents.setWindowOpenHandler(({ url }) => {
     if (!isSafeWebUrl(url)) {
@@ -1170,6 +1308,9 @@ function createViews(): void {
   oaView.webContents.on("did-finish-load", () => {
     oaStatus = { state: "ready", message: "OA 已打开" }
     publish()
+    // A fresh page load gets a fresh retry budget: the old per-lifetime
+    // budget permanently killed auto-open after ~17s of slow loading.
+    messageTries = 0
     openWorkMessages()
     setTimeout(() => refreshAttendance().catch(() => {}), 1500)
     setTimeout(() => {
@@ -1194,12 +1335,12 @@ function hostFrom(details: { requestingUrl?: string } | undefined): string {
 }
 
 function createWindow(): void {
-  const bounds = data.window || { width: 1440, height: 900 }
+  const bounds = restoreWindowBounds(data.window, screen.getAllDisplays())
   mainWindow = new BaseWindow({
-    width: bounds.width || 1440,
-    height: bounds.height || 900,
-    x: Number.isInteger(bounds.x) && Number(bounds.x) >= 0 && Number(bounds.x) < 2400 ? bounds.x : undefined,
-    y: Number.isInteger(bounds.y) && Number(bounds.y) >= 0 && Number(bounds.y) < 1400 ? bounds.y : undefined,
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
     minWidth: 1100,
     minHeight: 700,
     title: "OA",
@@ -1321,7 +1462,7 @@ function registerIpc(): void {
     const login = new BrowserWindow({
       width: 1000,
       height: 760,
-      backgroundColor: "#f8fafc",
+      backgroundColor: "#f5f6f8",
       title: config.name + " · 登录",
       autoHideMenuBar: true,
       webPreferences: {
@@ -1347,21 +1488,25 @@ function registerIpc(): void {
         return
       }
       const safeUrl = JSON.stringify(validatedURL || config.baseUrl)
-      const html = `<!doctype html><html><body style="font-family:system-ui,sans-serif;padding:32px;background:#f8fafc;color:#1e293b"><h2>页面加载失败</h2><p>${String(errorDescription || "无法打开登录页面").replace(/[<>&]/g, "")} (${errorCode})</p><p style="color:#64748b;word-break:break-all">${String(validatedURL || config.baseUrl).replace(/[<>&]/g, "")}</p><button onclick="location.replace(${safeUrl})" style="padding:8px 16px;border-radius:6px;border:1px solid #3555c5;background:#3555c5;color:#fff;cursor:pointer">重新加载</button></body></html>`
+      const html = `<!doctype html><html><body style="font-family:"Segoe UI","Microsoft YaHei",sans-serif;padding:32px;background:#f5f6f8;color:#222c38"><h2>页面加载失败</h2><p>${String(errorDescription || "无法打开登录页面").replace(/[<>&]/g, "")} (${errorCode})</p><p style="color:#586575;word-break:break-all">${String(validatedURL || config.baseUrl).replace(/[<>&]/g, "")}</p><button onclick="location.replace(${safeUrl})" style="padding:8px 16px;border-radius:6px;border:1px solid #3555c5;background:#3555c5;color:#fff;cursor:pointer">重新加载</button></body></html>`
       login.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html)).catch(() => {})
     })
     login.once("closed", () => integrationLogins.delete(config.id))
     await login.loadURL(config.baseUrl)
     return true
   })
-  ipcMain.handle("state:get", () => snapshot())
+  ipcMain.handle("state:get", (event) => {
+    if (event.sender !== sidebarView?.webContents || event.senderFrame !== event.sender.mainFrame) return null
+    return snapshot()
+  })
   ipcMain.handle("assistant:restore-session", (event) => {
     if (event.sender !== sidebarView?.webContents || event.senderFrame !== event.sender.mainFrame) return null
     const saved = sidebarSession
     sidebarSession = null
     return saved
   })
-  ipcMain.handle("panel:toggle", () => {
+  ipcMain.handle("panel:toggle", (event) => {
+    if (event.sender !== sidebarView?.webContents || event.senderFrame !== event.sender.mainFrame) return null
     togglePanel()
     if (data.panelOpen) {
       maybeRefreshAttendance(15000)
@@ -1373,7 +1518,9 @@ function registerIpc(): void {
     event.returnValue = {
       focused: attention.isForeground(),
       visible: Boolean(win && win.isVisible()),
-      minimized: Boolean(win && win.isMinimized())
+      minimized: Boolean(win && win.isMinimized()),
+      maximized: Boolean(win && win.isMaximized()),
+      fullscreen: Boolean(win && win.isFullScreen())
     }
   })
   function isOaClipboardSender(event: Electron.IpcMainInvokeEvent): boolean {
@@ -1404,16 +1551,35 @@ function registerIpc(): void {
       return await clipboard.has("image/png")
     } catch { return false }
   })
+  // Synchronous read: the OA page calls clipboard.readText() expecting a
+  // string back, so this is an ipcMain.on handler, not a handle().
+  ipcMain.on("oa:clipboard-read-text", (event) => {
+    try {
+      event.returnValue = isOaClipboardSender(event) ? clipboard.readText() : ""
+    } catch { event.returnValue = "" }
+  })
   ipcMain.handle("oa:clipboard-copy-image-at", async (event, x: unknown, y: unknown) => {
     try {
       if (!isOaClipboardSender(event) || event.senderFrame !== event.sender.mainFrame ||
           typeof x !== "number" || typeof y !== "number" ||
           !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 16000 || y > 16000) return false
       const zoom = event.sender.getZoomFactor()
+      // Remember the text first: clearing is needed so a stale image
+      // cannot read as a successful copy, but a failed copy must not
+      // destroy what the user had in the clipboard. (An image already
+      // in the clipboard cannot be restored this way.)
+      const previousText = await clipboard.readText().catch(() => "")
+      // Clear first: copyImageAt reports success only by "the clipboard
+      // holds an image", so a stale image from before would read as a
+      // successful copy even when this copy failed.
+      clipboard.clear()
       event.sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom))
       for (let attempt = 0; attempt < 8; attempt += 1) {
         await new Promise(resolve => setTimeout(resolve, 35))
         if (await clipboard.has("image/png")) return true
+      }
+      if (previousText) {
+        await clipboard.writeText(previousText).catch(() => {})
       }
     } catch { return false }
     return false
@@ -1429,7 +1595,10 @@ function registerIpc(): void {
     if (!fromChat) return false
     try {
       const frameUrl = event.senderFrame?.url || ""
-      if (!frameUrl) return true
+      // No frame URL means we cannot verify the sender: deny, same as
+      // the clipboard sender check. (Fail-open here used to let any
+      // sender without a frame use dialogs, shell and paths.)
+      if (!frameUrl) return false
       return new URL(frameUrl).origin === new URL(layoutUrl()).origin
     } catch { return false }
   }
@@ -1447,10 +1616,13 @@ function registerIpc(): void {
   })
   ipcMain.on("oa:dialog-save-sync", (event, options: unknown) => {
     try {
+      // showSaveDialogSync returns a string path ("" on cancel); keep
+      // that contract here too so the bridge can tell "picked a file"
+      // from "cancelled". Denied or failed calls also return "".
       event.returnValue = isOaPageSender(event)
         ? dialog.showSaveDialogSync(plainDialogOptions(options) as Electron.SaveDialogOptions)
-        : { canceled: true }
-    } catch { event.returnValue = { canceled: true } }
+        : ""
+    } catch { event.returnValue = "" }
   })
   ipcMain.handle("oa:dialog-open", async (event, options: unknown) => {
     try {
@@ -1480,7 +1652,10 @@ function registerIpc(): void {
   })
   ipcMain.handle("oa:shell-open-path", async (event, target: unknown) => {
     try {
-      if (!isOaPageSender(event) || typeof target !== "string" || !target || target.length > 4096) return "路径无效"
+      // shell.openPath runs executables: refuse them outright, otherwise
+      // a compromised OA page could launch any local program.
+      const executable = /\.(exe|bat|cmd|com|ps1|msi|scr|vbs|reg|jar)$/i
+      if (!isOaPageSender(event) || typeof target !== "string" || !target || target.length > 4096 || executable.test(target)) return "路径无效"
       return await shell.openPath(target)
     } catch (error) { return error instanceof Error ? error.message : "打开失败" }
   })
@@ -1506,12 +1681,145 @@ function registerIpc(): void {
         : ""
     } catch { event.returnValue = "" }
   })
-  ipcMain.on("oa:attention", () => {
+  ipcMain.on("oa:attention", (event) => {
+    if (!isOaPageSender(event)) return
     attention.attractAttention().catch(() => {})
+  })
+  // Chat-file downloads (保存 / 另存为). The OA page sends a
+  // "download-file" request with the file URL and its save options, after
+  // reading the download preferences through "get-preferences". The
+  // original client answered both from its main process; oa-shell used to
+  // drop the message in the bridge and had no handler at all, so every
+  // click left the download stuck in "wait" with no dialog, no file and
+  // no error. The download itself runs through Electron's download
+  // manager (webContents.downloadURL) so the OA session cookies and the
+  // auth token in the URL keep working; progress and completion are
+  // reported back through the same oa:bridge-ipc channel the photo view
+  // uses, which the OA page already listens for.
+  const pendingOaDownloads: Array<{ request: OaDownloadRequest; timer: NodeJS.Timeout; stale?: boolean }> = []
+  let oaDownloadSession: Session | null = null
+  function sendOaDownloadEvent(channel: string, payload: Record<string, unknown>): void {
+    if (oaView && !oaView.webContents.isDestroyed()) {
+      oaView.webContents.send("oa:bridge-ipc", channel, payload)
+    }
+  }
+  function installOaDownloadListener(): void {
+    if (!oaView || oaView.webContents.isDestroyed()) return
+    const downloadSession = oaView.webContents.session
+    if (oaDownloadSession === downloadSession) return
+    downloadSession.on("will-download", (_event, item) => {
+      const url = item.getURL()
+      let index = pendingOaDownloads.findIndex((entry) => !entry.stale && entry.request.url === url)
+      if (index === -1) {
+        // The file service may redirect, so the final URL no longer
+        // matches the requested one. With exactly one pending request
+        // it must be this download; with several we cannot tell which
+        // one it is, so leave Chromium's default handling alone.
+        index = pendingOaDownloads.length === 1 ? 0 : -1
+      }
+      // Not an OA chat-file download: leave Chromium's default handling alone.
+      if (index === -1) return
+      const entry = pendingOaDownloads[index]
+      pendingOaDownloads.splice(index, 1)
+      clearTimeout(entry.timer)
+      const req = entry.request
+      const filename = item.getFilename() || "download"
+      const dir = resolveDownloadDir(path, app.getPath("downloads"), req)
+      let target: string | null = null
+      try {
+        fs.mkdirSync(dir, { recursive: true })
+        if (req.isSaveAs) {
+          const picked = dialog.showSaveDialogSync({ defaultPath: path.join(dir, filename) })
+          if (!picked) {
+            item.cancel()
+            sendOaDownloadEvent("download-cancelled", { id: req.id })
+            return
+          }
+          target = picked
+        } else if (req.savePath) {
+          target = resolveExplicitSavePath(path, req.savePath, dir, filename, (candidate: string) => {
+            try { return fs.statSync(candidate).isDirectory() ? "dir" : "file"; } catch { return null; }
+          })
+          if (target) {
+            fs.mkdirSync(path.dirname(target), { recursive: true })
+          }
+        }
+        if (!target) {
+          target = uniqueFilePath(path, dir, filename, (candidate: string) => fs.existsSync(candidate))
+        }
+        if (!target) {
+          item.cancel()
+          sendOaDownloadEvent("download-error", { id: req.id })
+          return
+        }
+        item.setSavePath(target)
+      } catch {
+        item.cancel()
+        sendOaDownloadEvent("download-error", { id: req.id })
+        return
+      }
+      item.on("updated", (_updatedEvent, state) => {
+        if (state === "progressing") {
+          sendOaDownloadEvent("download-progress", { id: req.id, size: item.getTotalBytes(), current: item.getReceivedBytes() })
+        }
+      })
+      item.on("done", (_doneEvent, state) => {
+        if (state === "completed") {
+          const savedPath = item.getSavePath()
+          sendOaDownloadEvent("download-completed", { id: req.id, path: savedPath })
+          if (req.openOnFinish && savedPath) {
+            shell.openPath(savedPath).catch(() => {})
+          }
+        } else if (state === "cancelled") {
+          sendOaDownloadEvent("download-cancelled", { id: req.id })
+        } else {
+          sendOaDownloadEvent("download-error", { id: req.id })
+        }
+      })
+    })
+    oaDownloadSession = downloadSession
+  }
+  ipcMain.handle("get-preferences", (event, input: unknown) => {
+    if (!isOaPageSender(event)) return {}
+    return parseDownloadPreferences(input)
+  })
+  ipcMain.on("download-file", (event, input: unknown) => {
+    if (!isOaPageSender(event)) return
+    const req = parseDownloadPayload(input) as OaDownloadRequest | null
+    if (!req || !req.id || !oaView || oaView.webContents.isDestroyed()) {
+      if (req) sendOaDownloadEvent("download-error", { id: req.id })
+      return
+    }
+    installOaDownloadListener()
+    // The download may take a while to start (the server can take time
+    // to generate a large file). On timeout, report the error but keep
+    // the request for a grace period: if the download does start, it
+    // must still land in the right place instead of silently falling
+    // back to the default folder after an error was shown.
+    const timer = setTimeout(() => {
+      const index = pendingOaDownloads.findIndex((entry) => entry.request === req)
+      if (index !== -1) {
+        pendingOaDownloads[index].stale = true
+        sendOaDownloadEvent("download-error", { id: req.id })
+        pendingOaDownloads[index].timer = setTimeout(() => {
+          const staleIndex = pendingOaDownloads.findIndex((entry) => entry.request === req)
+          if (staleIndex !== -1) pendingOaDownloads.splice(staleIndex, 1)
+        }, 120_000)
+      }
+    }, 180_000)
+    pendingOaDownloads.push({ request: req, timer })
+    try {
+      oaView.webContents.downloadURL(req.url)
+    } catch {
+      clearTimeout(timer)
+      const index = pendingOaDownloads.findIndex((entry) => entry.request === req)
+      if (index !== -1) pendingOaDownloads.splice(index, 1)
+      sendOaDownloadEvent("download-error", { id: req.id })
+    }
   })
   ipcMain.on("oa:attention-stop", () => acknowledge())
   ipcMain.on("oa:photo-ipc", (event, channel: unknown, payload: unknown) => {
-    const allowedSender = event.sender === oaView?.webContents || event.sender === photoViewWindow?.webContents
+    const allowedSender = isOaPageSender(event)
     if (!allowedSender || typeof channel !== "string") {
       return
     }
@@ -1550,7 +1858,7 @@ function registerIpc(): void {
     }
   })
   ipcMain.on("oa:message", (event, raw: unknown) => {
-    if (!oaView || event.sender !== oaView.webContents || mainWindow?.isFocused()) {
+    if (!oaView || event.sender !== oaView.webContents || mainWindow?.isFocused() || !isOaPageSender(event)) {
       return
     }
     const normalized = normalizeMessagePayload(raw)
@@ -1605,8 +1913,17 @@ function registerIpc(): void {
   ipcMain.on("oa:show", () => showWindow())
   ipcMain.handle("assistant:command", async (event, input: unknown) => {
     if (event.sender !== sidebarView?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error("此页面无权执行分身命令")
-    const command = typeof input === "string" ? input.slice(0, 80) : ""
-    const result = await executeAssistantCommand(command)
+    // A long reminder used to be silently cut off mid-sentence at 80
+    // characters and sent incomplete. Reject it with a clear message
+    // instead of delivering half a sentence.
+    let result: AssistantResult
+    if (typeof input !== "string" || !input.trim()) {
+      result = { ok: false, message: "没有收到命令。" }
+    } else if (input.length > 500) {
+      result = { ok: false, message: "命令太长了，请控制在 500 字以内。" }
+    } else {
+      result = await executeAssistantCommand(input)
+    }
     rememberAssistantReply(result.message)
     return result
   })
@@ -1767,7 +2084,10 @@ if (gotLock) {
         try { return (await safeStorage.decryptStringAsync(cipher)).result } catch { throw new Error("凭证无法解密，请在原系统重新填写凭证") }
       }
     }
-    importLegacyProfileFiles()
+    // Decorative startup steps must not be able to block the app: a
+    // failure here used to skip createWindow/createTray entirely, leaving
+    // a running process with no window and no tray.
+    try { importLegacyProfileFiles() } catch (error) { console.error("迁移旧配置失败：", error instanceof Error ? error.message : error) }
     integrations = createIntegrationStore(path.join(app.getPath("userData"), "integrations.json"), credentialCrypto)
     aiStore = createAIStore(path.join(app.getPath("userData"), "ai-settings.json"), credentialCrypto)
     aiService = createAIService(aiStore, (url, options) => session.fromPartition("ai-gateway").fetch(String(url), options), entry => {
@@ -1779,8 +2099,10 @@ if (gotLock) {
     store = createStore(path.join(app.getPath("userData"), "overtime.json"))
     data = store.save(mergeLegacyOvertime(store.load() as unknown as AppData)) as unknown as AppData
     data.panelOpen = false
-    boundsSaver = createBoundsSaver(rememberBounds, 400)
-    ensureWindowsToastIdentity()
+    boundsSaver = createBoundsSaver(rememberBounds, 400, (error: unknown) => {
+      console.error("保存窗口位置失败：", error instanceof Error ? error.message : error)
+    })
+    try { ensureWindowsToastIdentity() } catch (error) { console.error("设置通知身份失败：", error instanceof Error ? error.message : error) }
     registerIpc()
     createWindow()
     createTray()
@@ -1792,6 +2114,10 @@ if (gotLock) {
     assistantTimer = setInterval(() => {
       runAssistantTasks()
     }, 15000)
+  }).catch((error) => {
+    console.error("启动失败：", error instanceof Error ? error.message : error)
+    try { createWindow() } catch { /* last resort: show a window if at all possible */ }
+    try { createTray() } catch { /* last resort: show a tray if at all possible */ }
   })
   app.on("second-instance", showWindow)
   app.on("before-quit", () => {

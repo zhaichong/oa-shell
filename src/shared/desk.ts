@@ -4,6 +4,12 @@ export interface AttendanceDetail {
   text: string
   applied?: boolean
   applicationPeriod?: string
+  // True when the overtime-detail fetch failed and no application link
+  // was found for the day: the applied state is unknown, not false.
+  appliedUnknown?: boolean
+  // False when the day ends after work end but before the overtime start:
+  // shown in the list, but excluded from totals and the unapplied count.
+  counted?: boolean
 }
 
 export interface AttendanceState {

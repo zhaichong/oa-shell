@@ -54,6 +54,10 @@ function createAttention({
       trayBlinkTimer = null;
     }
     if (tray && current.normal) {
+      // Blink by alternating the normal icon with a fully transparent
+      // frame, twice a second: the user confirmed 2026-11-20 this
+      // disappearing blink is the behaviour they want. An earlier
+      // change to an unread-envelope icon at 1s was reverted the same day.
       const hiddenIcon = current.blank || current.normal;
       if (!trayBlinkTimer) {
         tray.setImage(unread ? hiddenIcon : current.normal);

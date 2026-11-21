@@ -70,7 +70,7 @@ test("file cards can initialize when local storage is unavailable or corrupt", (
   }
 });
 
-function loadBridgeEnv({ nativeNotification, domMessage, pathname = "/sp/em/main", writeClipboard } = {}) {
+function loadBridgeEnv({ nativeNotification, domMessage, pathname = "/sp/em/main", writeClipboard, windowState = { focused: false, visible: true, minimized: false } } = {}) {
   const sent = [];
   const ipcListeners = new Map();
   const timers = new Map();
@@ -88,6 +88,7 @@ function loadBridgeEnv({ nativeNotification, domMessage, pathname = "/sp/em/main
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/oa-bridge"), "utf8"), {
     window,
     Date,
+    URL,
     setInterval() {},
     setTimeout(fn, delay) {
       timerSeq += 1;
@@ -117,7 +118,7 @@ function loadBridgeEnv({ nativeNotification, domMessage, pathname = "/sp/em/main
           },
           sendSync(channel, value) {
             if (channel === "oa:clipboard-write-text") return writeClipboard(value);
-            return { focused: false, visible: true, minimized: false };
+            return windowState;
           },
           invoke(channel, value) {
             if (channel === "oa:clipboard-write-text") return Promise.resolve(writeClipboard(value));
@@ -249,7 +250,9 @@ test("open-message-popup-window and tray-flash forward immediate payloads or fal
   cancelCase.window.emRequire("electron").ipcRenderer.send("open-message-popup-window");
   assert.equal(cancelCase.timers.size, 1);
   new cancelCase.window.Notification("陈七", { body: "准确消息" });
-  assert.equal(cancelCase.timers.size, 0);
+  // The 120ms fallback timer is gone; only the notification's own
+  // show timer (delay 0) remains.
+  assert.equal([...cancelCase.timers.values()].filter((entry) => entry.delay === 120).length, 0);
   assert.deepEqual(cancelCase.sent.filter((e) => e.channel === "oa:message").map(({ channel, payload }) => ({ channel, payload })), [
     { channel: "oa:message", payload: { sender: "陈七", content: "准确消息" } }
   ]);
@@ -301,7 +304,7 @@ test("get-all-support-js-api immediately emits get-all-support-js-api.result to 
   assert.ok(apis.includes("independentPhotoView"));
 });
 
-function loadBridgeWithRecordingIpc() {
+function loadBridgeWithRecordingIpc(saveSyncResult = "C:/Users/test/Downloads/a.docx") {
   const target = new EventTarget();
   const invoked = [];
   const synced = [];
@@ -315,6 +318,7 @@ function loadBridgeWithRecordingIpc() {
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/oa-bridge"), "utf8"), {
     window,
     Date,
+    URL,
     setInterval() {},
     setTimeout(fn) { return 0; },
     clearTimeout() {},
@@ -326,8 +330,10 @@ function loadBridgeWithRecordingIpc() {
           send() {},
           sendSync(channel, value) {
             synced.push({ channel, value });
+            if (channel === "oa:clipboard-read-text") return "剪贴板里的文字";
+            if (channel === "oa:window-state") return { focused: true, visible: true, minimized: false, maximized: true, fullscreen: false };
             if (channel === "oa:get-path") return value === "downloads" ? "C:/Users/test/Downloads" : "";
-            if (channel === "oa:dialog-save-sync") return { canceled: false, filePath: "C:/Users/test/Downloads/a.docx" };
+            if (channel === "oa:dialog-save-sync") return saveSyncResult;
             if (channel === "oa:dialog-open-sync") return ["C:/Users/test/a.docx"];
             if (channel === "oa:dialog-message-sync") return 1;
             return null;
@@ -358,7 +364,9 @@ test("desktop file dialogs forward to the main process instead of silently faili
   assert.equal(invoked.at(-1).channel, "oa:dialog-save");
   assert.equal(JSON.stringify(invoked.at(-1).value), JSON.stringify({ defaultPath: "a.docx" }));
 
-  assert.deepEqual(remote.dialog.showSaveDialogSync({}), { canceled: false, filePath: "C:/Users/test/Downloads/a.docx" });
+  // The bridge builds the sync result inside the VM context, so spread it
+  // into a plain object before comparing (prototypes differ by realm).
+  assert.deepEqual({ ...remote.dialog.showSaveDialogSync({}) }, { canceled: false, filePath: "C:/Users/test/Downloads/a.docx" });
   assert.equal(synced.at(-1).channel, "oa:dialog-save-sync");
   assert.equal(JSON.stringify(synced.at(-1).value), "{}");
 
@@ -374,6 +382,20 @@ test("desktop file dialogs forward to the main process instead of silently faili
   assert.equal(JSON.stringify(invoked.at(-1).value), "{}");
 });
 
+test("a cancelled synchronous save dialog maps to canceled instead of a path", () => {
+  const { window } = loadBridgeWithRecordingIpc("");
+  const remote = window.emRequire("@electron/remote");
+  assert.deepEqual({ ...remote.dialog.showSaveDialogSync({}) }, { canceled: true });
+});
+
+test("clipboard invoke calls forward to the main process", async () => {
+  const { window, invoked } = loadBridgeWithRecordingIpc();
+  const ipc = window.emRequire("electron").ipcRenderer;
+  await ipc.invoke("oa:clipboard-write-text", "hello");
+  assert.equal(invoked.at(-1).channel, "oa:clipboard-write-text");
+  assert.equal(await ipc.invoke("oa:unknown-channel"), null);
+});
+
 test("shell and app paths forward to the main process", async () => {
   const { window, invoked, synced } = loadBridgeWithRecordingIpc();
   const remote = window.emRequire("@electron/remote");
@@ -387,4 +409,45 @@ test("shell and app paths forward to the main process", async () => {
   assert.equal(remote.app.getPath("nonsense"), "");
   assert.equal(synced.at(-1).channel, "oa:get-path");
   assert.equal(synced.at(-1).value, "nonsense");
+});
+
+test("a generic fallback notification does not replace the specific notice for popup clicks", () => {
+  const { window } = loadBridgeEnv();
+  const specific = new window.Notification("张三", { body: "下午三点开会" });
+  let clicks = 0;
+  specific.onclick = () => { clicks += 1; };
+  new window.Notification("工作消息", { body: "收到一条新消息" });
+  assert.equal(window.__triggerOaNoticeClick({ sender: "张三", content: "下午三点开会" }), true);
+  assert.equal(clicks, 1);
+});
+
+test("cancel-tray-flash only stops flashing when the window is focused", () => {
+  const unknown = loadBridgeEnv({ windowState: {} });
+  unknown.window.emRequire("electron").ipcRenderer.send("cancel-tray-flash");
+  assert.equal(unknown.sent.some((e) => e.channel === "oa:attention-stop"), false);
+
+  const focused = loadBridgeEnv({ windowState: { focused: true, visible: true, minimized: false } });
+  focused.window.emRequire("electron").ipcRenderer.send("cancel-tray-flash");
+  assert.equal(focused.sent.some((e) => e.channel === "oa:attention-stop"), true);
+});
+
+test("url stub parses relative URLs and clipboard readText returns real text", () => {
+  const { window } = loadBridgeWithRecordingIpc();
+  const url = window.emRequire("url");
+  assert.equal(url.parse("docs/a.html").pathname, "/sp/em/docs/a.html");
+  assert.equal(url.format(url.parse("docs/a.html")), "https://oa.yarward.com/sp/em/docs/a.html");
+  assert.equal(window.emRequire("electron").clipboard.readText(), "剪贴板里的文字");
+  assert.equal(window.emRequire("@electron/remote").getCurrentWindow().isMaximized(), true);
+  assert.equal(window.emRequire("@electron/remote").getCurrentWindow().isFullScreen(), false);
+});
+
+test("Web Notification fires onshow after construction", () => {
+  const { window, timers } = loadBridgeEnv();
+  const notice = new window.Notification("张三", { body: "下午三点开会" });
+  let shown = 0;
+  notice.onshow = () => { shown += 1; };
+  for (const entry of [...timers.values()]) {
+    entry.fn();
+  }
+  assert.equal(shown, 1);
 });

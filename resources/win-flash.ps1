@@ -87,16 +87,16 @@ while ($true) {
   if ($line -eq "FG") {
     Emit ([OAFlash]::GetForegroundWindow().ToInt64().ToString())
   } elseif ($line.StartsWith("FLASH ")) {
-    FlashHwnd ([Int64]$line.Substring(6)) 14
+    try { FlashHwnd ([Int64]$line.Substring(6)) 14 } catch { Emit "err" }
   } elseif ($line.StartsWith("STOP ")) {
-    FlashHwnd ([Int64]$line.Substring(5)) 0
+    try { FlashHwnd ([Int64]$line.Substring(5)) 0 } catch { Emit "err" }
   } elseif ($line.StartsWith("ICON ")) {
     $rest = $line.Substring(5).Trim()
     $split = $rest.IndexOf(" ")
     if ($split -lt 1) {
       Emit "err"
     } else {
-      SetWindowIcon ([Int64]$rest.Substring(0, $split)) $rest.Substring($split + 1).Trim()
+      try { SetWindowIcon ([Int64]$rest.Substring(0, $split)) $rest.Substring($split + 1).Trim() } catch { Emit "err" }
     }
   } else {
     Emit "err"

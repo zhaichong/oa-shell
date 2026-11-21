@@ -73,7 +73,7 @@ function clockValue(item) {
     return "";
   }
   if (item.signTime && typeof item.signTime === "object") {
-    return item.signTime.value || "";
+    return item.signTime.value || item.signTime.time || item.signTime.text || "";
   }
   return item.time || item.value || item.signTime || "";
 }
@@ -147,8 +147,27 @@ function appliedDateKeys(payload, punches) {
   return keys;
 }
 
-function punchRows(punches, detail) {
+function detailReady(detail) {
+  // A failed detail fetch must not be read as "no applications".
+  // Failure is signalled by a missing payload, a non-JSON response, or
+  // an error code. An empty or differently-shaped payload still means
+  // the endpoint answered, so it counts as ready.
+  if (!detail || typeof detail !== "object") return false;
+  if (detail.msg === "not-json") return false;
+  const code = detail.code ?? detail.status;
+  if (code != null && Number(code) !== 200 && Number(code) !== 0) return false;
+  return true;
+}
+
+function punchRows(punches, detail, settings) {
   const applied = appliedDateKeys(detail, punches);
+  const detailOk = detailReady(detail);
+  // Overtime is measured from the configured work end, and only counts
+  // from the configured overtime start (default 18:00 / 19:00). Days
+  // ending between the two are still shown, marked as below the
+  // threshold, instead of vanishing from the list entirely.
+  const workEnd = clockMinutes(settings && settings.workEnd) ?? WORK_END_MINUTES;
+  const overtimeStart = clockMinutes(settings && settings.overtimeStart) ?? OVERTIME_PUNCH_MINUTES;
   const latestByDate = new Map();
   (Array.isArray(punches) ? punches : []).forEach((day) => {
     const key = dateKey(day && day.date);
@@ -163,16 +182,23 @@ function punchRows(punches, detail) {
   });
   return Array.from(latestByDate.keys()).sort().map((key) => {
     const latest = latestByDate.get(key);
-    if (latest < OVERTIME_PUNCH_MINUTES) {
+    if (latest <= workEnd) {
       return null;
     }
+    const counted = latest >= overtimeStart;
     return {
       id: key,
       date: key.slice(5),
-      text: formatClock(WORK_END_MINUTES) + "\u2013" + formatClock(latest) + " \u00b7 " + formatDuration(latest - WORK_END_MINUTES),
-      minutes: latest - WORK_END_MINUTES,
+      text: formatClock(workEnd) + "\u2013" + formatClock(latest) + " \u00b7 " + formatDuration(latest - workEnd) + (counted ? "" : " \u00b7 未到加班起算点"),
+      minutes: latest - workEnd,
+      counted,
       ...(applied.get(key) ? { applicationPeriod: applied.get(key) } : {}),
-      applied: applied.has(key)
+      applied: applied.has(key),
+      // No application link found and the detail fetch failed: we do not
+      // know whether an application exists, so say so instead of
+      // asserting "not applied". Positive evidence (a link in the day's
+      // own flows) still counts even when the detail fetch failed.
+      ...(!applied.has(key) && !detailOk ? { appliedUnknown: true } : {})
     };
   }).filter(Boolean);
 }
@@ -192,11 +218,13 @@ function statisReady(statis) {
   return true;
 }
 
-function normalizeAttendance(statis, detail, range, punches) {
-  const rows = punchRows(punches, detail);
+function normalizeAttendance(statis, detail, range, punches, settings) {
+  const rows = punchRows(punches, detail, settings);
   const failed = !statisReady(statis) && !hasAnyClock(punches);
-  const minutes = rows.reduce((sum, row) => sum + row.minutes, 0);
-  const unappliedCount = failed ? 0 : rows.filter((row) => !row.applied).length;
+  // Only rows at or past the overtime start count toward the total and
+  // the unapplied count; below-threshold rows are visible but excluded.
+  const minutes = rows.filter((row) => row.counted).reduce((sum, row) => sum + row.minutes, 0);
+  const unappliedCount = failed ? 0 : rows.filter((row) => row.counted && !row.applied && !row.appliedUnknown).length;
   return {
     state: failed ? "error" : "ready",
     message: failed ? ((statis && statis.msg) || "出勤统计没有返回") : "",
@@ -209,7 +237,9 @@ function normalizeAttendance(statis, detail, range, punches) {
       date: row.date,
       text: row.text,
       ...(row.applicationPeriod ? { applicationPeriod: row.applicationPeriod } : {}),
-      applied: row.applied
+      applied: row.applied,
+      ...(row.appliedUnknown ? { appliedUnknown: true } : {}),
+      ...(row.counted ? {} : { counted: false })
     }))
   };
 }
@@ -223,7 +253,7 @@ function pageFetchExpression(range) {
     "  if (sid) { headers.ETEAMSID = sid; headers.eteamsid = sid; }\n" +
     "  async function post(url, body, query) {\n" +
     "    const target = query ? url + '?' + new URLSearchParams(body).toString() : url;\n" +
-    "    const response = await fetch(target, { method: 'POST', credentials: 'include', headers: headers, body: query ? undefined : JSON.stringify(body) });\n" +
+    "    const response = await fetch(target, { method: 'POST', credentials: 'include', headers: headers, body: query ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(30000) });\n" +
     "    const text = await response.text();\n" +
     "    try { return JSON.parse(text); } catch (error) { return { code: response.status, msg: 'not-json' }; }\n" +
     "  }\n" +
@@ -231,7 +261,7 @@ function pageFetchExpression(range) {
     "    if (!item || typeof item !== 'object') return;\n" +
     "    if (Array.isArray(item.signInfo)) { item.signInfo.forEach((entry) => addClock(clocks, entry)); return; }\n" +
     "    const sign = item.signTime && typeof item.signTime === 'object' ? item.signTime : null;\n" +
-    "    const value = sign ? sign.value : (typeof item.signTime === 'string' ? item.signTime : (item.value || item.time || ''));\n" +
+    "    const value = sign ? (sign.value || sign.time || sign.text || '') : (typeof item.signTime === 'string' ? item.signTime : (item.value || item.time || ''));\n" +
     "    if (value == null || value === '') return;\n" +
     "    const title = sign ? sign.title : (item.title || '');\n" +
     "    clocks.push({ title: String(title || '').slice(0, 24), time: String(value).slice(0, 32) });\n" +
@@ -297,7 +327,8 @@ function pageFetchExpression(range) {
     "  if (!statis || (statis.code && Number(statis.code) !== 200 && !(statis.data && statis.data.attendSummary))) {\n" +
     "    statis = await post('/api/app/attend/web/attendInfoV2/getAttendInfoStatis', monthBody, false);\n" +
     "  }\n" +
-    "  const detailBody = { type: 'OVERTIME', originBeginDate: " + begin + ", originEndDate: " + end + ", beginDate: " + begin + ", endDate: " + end + ", current: '1', pageSize: '100' };\n" +
+    "  const detailUser = window.TEAMS && window.TEAMS.currentUser && window.TEAMS.currentUser.id;\n" +
+  "  const detailBody = { ...(detailUser ? { userId: detailUser } : {}), type: 'OVERTIME', originBeginDate: " + begin + ", originEndDate: " + end + ", beginDate: " + begin + ", endDate: " + end + ", current: '1', pageSize: '100' };\n" +
     "  let detail = await post('/api/attend/web/attendInfoV2/getAttendInfoDetail', detailBody, false);\n" +
     "  if (!detail || Number(detail.code) === 500 || !(detail.data && (detail.data.displayData || detail.data.datas || detail.data.list))) {\n" +
     "    const again = await post('/api/attend/web/attendInfoV2/getAttendInfoDetail', detailBody, true);\n" +
